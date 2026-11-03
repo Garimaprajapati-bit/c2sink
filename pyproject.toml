@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "c2sink"
+version = "0.1.0"
+description = "Passive sinkhole that identifies infected subscribers and keeps a BGP C2 blackhole feed accurate"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Garima Prajapati" }]
+keywords = ["dfir", "sinkhole", "bgp", "blackhole", "c2", "netflow", "isp", "tls", "ja3"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+  "Topic :: System :: Networking :: Monitoring",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+c2sink = "c2sink.__main__:main"
+
+[tool.setuptools]
+packages = ["c2sink"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

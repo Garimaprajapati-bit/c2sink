@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+events.jsonl
+examples/demo_events.jsonl
+.pytest_cache/
+examples/_demo_events.jsonl
+examples/_demo_feed.txt

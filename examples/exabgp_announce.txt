@@ -1,0 +1,4 @@
+announce route 127.0.0.0/8 next-hop 192.0.2.1 community [65000:666 no-export]
+announce route 203.0.113.0/24 next-hop 192.0.2.1 community [65000:666 no-export]
+announce route 198.51.100.10/32 next-hop 192.0.2.1 community [65000:666 no-export]
+announce route 2001:db8:c2::/48 next-hop 2001:db8::1 community [65000:666 no-export]

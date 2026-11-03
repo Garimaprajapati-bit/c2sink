@@ -1,0 +1,6 @@
+# Example botnet.cl-style blackhole feed export: one IP/prefix per line,
+# optional label. Documentation ranges only (RFC 5737 / RFC 3849).
+127.0.0.0/8        DemoLoopback
+203.0.113.0/24     ExampleTrojan
+198.51.100.10      ExampleStealer
+2001:db8:c2::/48   ExampleBotV6
