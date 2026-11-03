@@ -1,60 +1,75 @@
-# c2sink — find the infected customers behind a C2 blackhole
+# c2sink — turn a C2 blackhole into live threat intelligence
 
 ![demo](examples/demo.gif)
 
 
-An ISP that blackholes a command-and-control (C2) prefix stops the bad traffic,
-but it still doesn't know **which of its own subscribers are infected**. The
-flows that would tell it are dropped at the edge.
+A BGP C2 blackhole feed stops traffic to known command-and-control (C2)
+infrastructure, but the dropped packets could tell the operator a great deal:
+which C2s are still live, what the infected clients look like, and whether a
+listed prefix is starting to catch legitimate traffic. The blackhole throws
+that away.
 
-`c2sink` turns the blackhole into a **passive sinkhole**: instead of dropping
-C2-bound traffic, the ISP forwards it to one host that completes the TCP
-handshake, records who connected and what they revealed, and **never sends a
-byte of application data back**. The infected device receives no commands; the
-operator gets a per-subscriber report.
-
-It is meant as a companion to a BGP blackhole feed (such as the ones ISPs
-already subscribe to): the same prefixes that are blackholed are the ones the
-sink catches.
+`c2sink` keeps it. Instead of dropping C2-bound traffic, the network forwards
+it to one **passive** host that completes the TCP handshake, reads only the
+first bytes the client sends, and records them. It is a telemetry collector for
+redirected botnet traffic — the "C2 emulator" idea, minus any emulation of the
+C2 itself.
 
 ```
   infected host ──TCP SYN──▶  [ edge router: feed prefix ]
-                                     │  (announce prefix with next-hop = sink,
-                                     │   or REDIRECT to the sink)
+                                     │  announce prefix with next-hop = sink,
+                                     │  or REDIRECT to the sink
                                      ▼
-                               [ c2sink host ]
-                                 • completes handshake
-                                 • reads first bytes only
-                                 • logs src, dst, SNI, JA3, HTTP host, time
-                                 • sends nothing back, closes
+                               [ c2sink host ]  (passive)
+                                 • completes the TCP handshake (kernel only)
+                                 • reads the first bytes, never writes back
+                                 • records dst (C2), src, SNI, JA4/JA3, HTTP, time
                                      │
-                                     ▼
-                           per-subscriber report
+                     ┌───────────────┼────────────────┐
+              feed-health        beaconing        subscriber view
+         (live/dark, FP signal) (call-home timing) (abuse desk; optional)
 ```
 
-## Why passive matters
+## The passive boundary (exactly what it does and does not do)
 
-The sink answers the handshake (the kernel does that) and then stays silent. It
-does not impersonate the C2, does not issue commands and does not modify the
-device. That keeps it on the right side of the line: it observes which
-customers are infected so they can be notified, nothing more. "Un-infecting"
-devices is deliberately out of scope.
+| | |
+|---|---|
+| TCP handshake | completed by the **kernel** (unavoidable to receive the first bytes) |
+| Application-level response | **none** — the sink never writes a byte back |
+| C2 commands / tasking | **none** |
+| Payload execution | **none** |
 
-## What it records
+The sink is an observer, not a C2 impersonator. It does not task, modify or
+"un-infect" devices. The end-to-end test asserts that every connection returns
+**zero bytes** from the sink, so this boundary is demonstrated, not just claimed.
 
-For every connection to a feed destination:
-- source IP and port (the subscriber), destination IP and port (the C2),
-  timestamp, bytes received;
-- the feed's own label for that destination (whatever the feed knew);
-- if the first bytes are a TLS ClientHello: the SNI, offered ALPN, negotiated
-  version and a **JA3** fingerprint (GREASE-stripped), and whether the hello was
-  complete or split across segments;
-- if they are a plaintext HTTP request: method, target, Host and User-Agent;
-- the first 32 bytes in hex, for anything else.
+## What it extracts (the intelligence)
 
-No decryption happens anywhere: the ClientHello and HTTP request head are
-cleartext. The report attaches no attribution beyond the feed's label and the
-raw observed fields.
+For every connection to a listed destination, from the first read only, no
+decryption (the ClientHello and HTTP request head are cleartext):
+
+- **TLS client fingerprint**: **JA4** (FoxIO) and JA3, both GREASE-stripped,
+  plus SNI, offered ALPN and negotiated version — identifies the client stack
+  even across IPs and SNIs.
+- **HTTP metadata**: method, target, Host, User-Agent.
+- **Completeness**: whether the ClientHello was whole or split across segments.
+- The first 32 bytes in hex for anything else.
+
+From the event log it then derives:
+
+- **Feed health** (per listed C2): hits, unique subscribers, last contact, and
+  **live/dark** classification — which feed entries are still worth listing.
+- **False-positive candidates**: a listed prefix contacted by many distinct
+  subscribers with a named service, i.e. possibly legitimate traffic caught by
+  the prefix.
+- **Beaconing**: source→C2 pairs whose contacts arrive on a regular timer, the
+  signature of automated call-home rather than a human.
+- **Subscriber view** (optional, for an ISP's own abuse desk): which internal
+  IPs contacted which C2s. Most useful *before CGNAT*; an operator that already
+  derives this from NetFlow can ignore it and keep the feed-health and
+  fingerprint intelligence.
+
+No attribution beyond the feed's own label and the raw observed fields.
 
 ## Install
 
@@ -79,9 +94,10 @@ python -m c2sink rules --feed examples/feed.txt --port 8443 | sudo sh
 python -m c2sink rules --feed examples/feed.txt --exabgp \
     --nh4 192.0.2.10 --nh6 2001:db8::10 --community 65000:666
 
-# 3. two reports from the same log:
-python -m c2sink report --log events.jsonl            # per subscriber (abuse desk)
-python -m c2sink report --log events.jsonl --health   # per listed C2 (feed operator)
+# 3. reports from the same log:
+python -m c2sink report --log events.jsonl --health   # per listed C2: live/dark, false positives
+python -m c2sink report --log events.jsonl --beacons  # regular call-home patterns
+python -m c2sink report --log events.jsonl            # per subscriber (abuse desk; optional)
 ```
 
 ### Feed format

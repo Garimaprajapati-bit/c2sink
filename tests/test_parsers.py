@@ -86,3 +86,33 @@ def test_feed_health_groups_by_destination():
     # at ts just after, both are LIVE; far in the future both go dark
     assert "LIVE" in render_health(health, now=1003.0)
     assert "dark" in render_health(health, now=1003.0 + 48 * 3600)
+
+
+def test_ja4_structure_and_sni_flag():
+    from c2sink.tls import parse_client_hello
+    from c2sink.generate import build_client_hello
+    h = parse_client_hello(build_client_hello("login.example-cdn.net"))
+    a, b, c = h.ja4.split("_")
+    # a = t + version(2) + d/i + ciphers(2) + exts(2) + alpn(2)
+    assert a[0] == "t" and a[1:3] == "13" and a[3] == "d"
+    assert a[4:6] == "05" and a[6:8] == "06" and a[8:10] == "h2"
+    assert len(b) == 12 and len(c) == 12
+    assert h.ja4 == parse_client_hello(build_client_hello("login.example-cdn.net")).ja4
+    # no SNI flips the flag to 'i' and drops one extension
+    h2 = parse_client_hello(build_client_hello(None))
+    assert h2.ja4.split("_")[0][3] == "i"
+
+
+def test_beacon_detection():
+    from c2sink.report import find_beacons
+    # regular 60s interval from one src to one dst -> a beacon
+    evs = [{"ts": 1000.0 + i * 60, "src_ip": "10.0.0.5", "dst_ip": "203.0.113.9",
+            "feed_label": "Loader"} for i in range(6)]
+    # noise: a single contact elsewhere, should not be a beacon
+    evs.append({"ts": 2000.0, "src_ip": "10.0.0.6", "dst_ip": "203.0.113.1", "feed_label": None})
+    beacons = find_beacons(evs)
+    assert len(beacons) == 1
+    b = beacons[0]
+    assert b.src_ip == "10.0.0.5" and b.dst_ip == "203.0.113.9"
+    assert abs(b.mean_interval - 60.0) < 1e-6
+    assert b.jitter < 0.01

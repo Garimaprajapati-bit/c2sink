@@ -71,11 +71,14 @@ PY
 beat 2
 sleep 1; kill "$SINK" 2>/dev/null; wait "$SINK" 2>/dev/null || true; SINK=
 
-say "Report 1 — for the ISP abuse desk: which customers are infected, and what they are."
-run "PYTHONPATH=. python -m c2sink report --log $LOG"; beat 3
-
-say "Report 2 — for the feed operator: which listed C2s are live, and false-positive signals."
+say "Intelligence 1 — feed health: which listed C2s are still live (what the operator cares about)."
 run "PYTHONPATH=. python -m c2sink report --log $LOG --health"; beat 3
 
-printf "\n%s\n" "${BOLD}The blackhole still drops the traffic. The sinkhole tells you who, what and whether the entry is still worth listing.${R}"
+say "Intelligence 2 — client fingerprint: JA4 identifies the malware's TLS stack across IPs/SNIs."
+run "PYTHONPATH=. python -m c2sink report --log $LOG | grep -A6 127.0.1.13"; beat 3
+
+say "Intelligence 3 — beaconing: regular call-home timing (on a timed sample)."
+run "PYTHONPATH=. python -m c2sink report --log examples/beacon_sample.jsonl --beacons"; beat 3
+
+printf "\n%s\n" "${BOLD}The blackhole still drops the traffic. The sinkhole turns it into live feed intelligence: which C2s are active, what the clients are, and how they beacon.${R}"
 beat 2.5

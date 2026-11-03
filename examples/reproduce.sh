@@ -69,7 +69,9 @@ kill "$SINK" 2>/dev/null; wait "$SINK" 2>/dev/null || true; SINK=
 
 echo "=== raw events (${LOG}) ==="
 cat "$LOG"
-echo; echo "=== subscriber report ==="
-PYTHONPATH=. python -m c2sink report --log "$LOG"
-echo "=== feed-health report ==="
+echo; echo "=== feed-health report (live/dark, false-positive signal) ==="
 PYTHONPATH=. python -m c2sink report --log "$LOG" --health
+echo "=== subscriber report (abuse desk; optional) ==="
+PYTHONPATH=. python -m c2sink report --log "$LOG"
+echo "=== beaconing report (on the timed sample examples/beacon_sample.jsonl) ==="
+PYTHONPATH=. python -m c2sink report --log examples/beacon_sample.jsonl --beacons

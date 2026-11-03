@@ -42,6 +42,7 @@ class Event:
     sni: Optional[str] = None
     tls_version: Optional[int] = None
     ja3: Optional[str] = None
+    ja4: Optional[str] = None
     alpn: list = field(default_factory=list)
     http_host: Optional[str] = None
     http_method: Optional[str] = None
@@ -125,6 +126,7 @@ class Sinkhole:
             ev.sni = hello.sni
             ev.tls_version = hello.max_version
             ev.ja3 = hello.ja3
+            ev.ja4 = hello.ja4
             ev.alpn = hello.alpn
             ev.client_hello_complete = hello.complete
             return ev

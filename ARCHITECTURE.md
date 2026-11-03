@@ -48,9 +48,9 @@ Placement matters and is a deliberate choice, not an accident:
 |---|---|
 | `feed.py` | Parse the feed; longest-prefix lookup; emit REDIRECT / ExaBGP rules. |
 | `server.py` | Accept, recover the original destination, read the first bytes, build an `Event`, never write back, close. |
-| `tls.py` | Parse a (possibly truncated) TLS ClientHello: SNI, versions, ALPN, JA3. |
+| `tls.py` | Parse a (possibly truncated) TLS ClientHello: SNI, versions, ALPN, JA4 and JA3. |
 | `http.py` | Parse a plaintext HTTP request head: method, target, Host, User-Agent. |
-| `report.py` | Aggregate the event log two ways: by subscriber, by destination. |
+| `report.py` | Derive from the event log: feed health (per C2), beaconing (per src→C2 pair), and the subscriber view. |
 | `generate.py` | Craft ClientHello / HTTP for tests and demos (no real malware). |
 | `__main__.py` | `serve` / `report` / `rules` CLI. |
 
@@ -61,12 +61,26 @@ depend only on the log. Nothing depends on the network except `server` and
 `generate`. This is the same layering as a protocol stack: wire format, then
 session, then reporting.
 
+The intelligence lives entirely in `report.py`, computed offline from the log:
+**JA4/JA3** client fingerprints (in `tls.py`) survive IP and SNI changes;
+**feed health** marks each listed C2 live or dark and flags possible false
+positives (many distinct subscribers + a named service); **beaconing** groups
+by (src, C2) and flags pairs whose inter-arrival times are regular enough
+(low jitter) to look automated rather than human. Adding an analysis is a new
+pure function over the log, never a change to capture.
+
 ## Key design decisions
 
 1. **Passive by construction.** The server reads once and closes; there is no
    code path that writes application data to a client. The kernel completes the
-   TCP handshake (unavoidable), nothing more. This keeps the tool an observer,
-   not a C2 impersonator, which is both an ethical and a legal line.
+   TCP handshake (unavoidable to receive the first bytes), nothing more:
+
+   | TCP handshake | kernel only | Application response | none |
+   | C2 commands | none | Payload execution | none |
+
+   This keeps the tool an observer, not a C2 impersonator, which is both an
+   ethical and a legal line. The end-to-end test asserts zero bytes are
+   returned, so the boundary is demonstrated, not just asserted.
 
 2. **Original-destination recovery via `SO_ORIGINAL_DST`.** With nat REDIRECT,
    one listener serves every prefix and still records the true C2 address and

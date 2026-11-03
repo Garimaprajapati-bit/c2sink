@@ -12,8 +12,8 @@ import asyncio
 import sys
 
 from .feed import FeedIndex, exabgp_announcements, iptables_rules, load_feed
-from .report import (build, build_health, load_events, render_health,
-                     render_json, render_text)
+from .report import (build, build_health, find_beacons, load_events,
+                     render_beacons, render_health, render_json, render_text)
 from .server import Sinkhole
 
 
@@ -50,6 +50,8 @@ def _report(args) -> int:
     events = load_events(args.log)
     if args.health:
         print(render_health(build_health(events)))
+    elif args.beacons:
+        print(render_beacons(find_beacons(events)))
     else:
         subs = build(events)
         print(render_json(subs) if args.json else render_text(subs))
@@ -87,6 +89,7 @@ def main(argv=None) -> int:
     r.add_argument("--log", default="events.jsonl")
     r.add_argument("--json", action="store_true", help="subscriber report as JSON")
     r.add_argument("--health", action="store_true", help="feed-health report (per listed destination) instead")
+    r.add_argument("--beacons", action="store_true", help="beaconing report (regular call-home patterns) instead")
     r.set_defaults(func=_report)
 
     g = sub.add_parser("rules", help="emit redirect rules for the feed")

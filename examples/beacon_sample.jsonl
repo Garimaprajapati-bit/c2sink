@@ -1,0 +1,10 @@
+{"ts":1793600000,"src_ip":"100.64.12.37","dst_ip":"203.0.113.10","dst_port":443,"proto":"tls","feed_label":"ExampleLoader","sni":"api.exampleloader.cc","ja4":"t13d0506h2_8d80437dd348_0d385148b956","ja3":"637f6ed8b841a5a54460abea6667e41d","http_host":null}
+{"ts":1793600300,"src_ip":"100.64.12.37","dst_ip":"203.0.113.10","dst_port":443,"proto":"tls","feed_label":"ExampleLoader","sni":"api.exampleloader.cc","ja4":"t13d0506h2_8d80437dd348_0d385148b956","ja3":"637f6ed8b841a5a54460abea6667e41d","http_host":null}
+{"ts":1793600600,"src_ip":"100.64.12.37","dst_ip":"203.0.113.10","dst_port":443,"proto":"tls","feed_label":"ExampleLoader","sni":"api.exampleloader.cc","ja4":"t13d0506h2_8d80437dd348_0d385148b956","ja3":"637f6ed8b841a5a54460abea6667e41d","http_host":null}
+{"ts":1793600900,"src_ip":"100.64.12.37","dst_ip":"203.0.113.10","dst_port":443,"proto":"tls","feed_label":"ExampleLoader","sni":"api.exampleloader.cc","ja4":"t13d0506h2_8d80437dd348_0d385148b956","ja3":"637f6ed8b841a5a54460abea6667e41d","http_host":null}
+{"ts":1793601200,"src_ip":"100.64.12.37","dst_ip":"203.0.113.10","dst_port":443,"proto":"tls","feed_label":"ExampleLoader","sni":"api.exampleloader.cc","ja4":"t13d0506h2_8d80437dd348_0d385148b956","ja3":"637f6ed8b841a5a54460abea6667e41d","http_host":null}
+{"ts":1793601500,"src_ip":"100.64.12.37","dst_ip":"203.0.113.10","dst_port":443,"proto":"tls","feed_label":"ExampleLoader","sni":"api.exampleloader.cc","ja4":"t13d0506h2_8d80437dd348_0d385148b956","ja3":"637f6ed8b841a5a54460abea6667e41d","http_host":null}
+{"ts":1793600050,"src_ip":"100.64.44.2","dst_ip":"203.0.113.20","proto":"http","feed_label":"ExampleStealer","sni":null,"http_host":"panel.examplestealer.su"}
+{"ts":1793600900,"src_ip":"100.64.44.2","dst_ip":"203.0.113.20","proto":"http","feed_label":"ExampleStealer","sni":null,"http_host":"panel.examplestealer.su"}
+{"ts":1793600905,"src_ip":"100.64.44.2","dst_ip":"203.0.113.20","proto":"http","feed_label":"ExampleStealer","sni":null,"http_host":"panel.examplestealer.su"}
+{"ts":1793604000,"src_ip":"100.64.44.2","dst_ip":"203.0.113.20","proto":"http","feed_label":"ExampleStealer","sni":null,"http_host":"panel.examplestealer.su"}

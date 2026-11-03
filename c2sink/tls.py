@@ -24,9 +24,13 @@ EXT_SUPPORTED_GROUPS = 0x000A
 EXT_EC_POINT_FORMATS = 0x000B
 EXT_SUPPORTED_VERSIONS = 0x002B
 EXT_ALPN = 0x0010
+EXT_SIGNATURE_ALGORITHMS = 0x000D
 
 # RFC 8701 GREASE values: must be ignored for fingerprinting.
 GREASE = {v for v in range(0x0A0A, 0xFAFB, 0x1010)}
+
+# TLS version code -> JA4 two-char label.
+_JA4_VERSION = {0x0304: "13", 0x0303: "12", 0x0302: "11", 0x0301: "10", 0x0300: "s3"}
 
 
 @dataclass
@@ -38,6 +42,7 @@ class ClientHello:
     groups: List[int] = field(default_factory=list)
     point_formats: List[int] = field(default_factory=list)
     supported_versions: List[int] = field(default_factory=list)
+    sig_algs: List[int] = field(default_factory=list)
     alpn: List[str] = field(default_factory=list)
     sni: Optional[str] = None
     complete: bool = True
@@ -63,6 +68,47 @@ class ClientHello:
     def max_version(self) -> int:
         real = [v for v in self.supported_versions if v not in GREASE]
         return max(real) if real else self.hello_version
+
+    @property
+    def ja4(self) -> str:
+        """JA4 TLS client fingerprint (FoxIO spec).
+
+        ja4_a _ ja4_b _ ja4_c
+          a: proto(t) + tls-version + d|i(SNI) + 2-digit cipher count +
+             2-digit extension count + 2 chars from the first ALPN
+          b: first 12 hex of sha256 of the sorted GREASE-free cipher list
+          c: first 12 hex of sha256 of the sorted GREASE-free extension list
+             (SNI and ALPN removed) + "_" + signature algorithms in order
+        """
+        ciphers = [c for c in self.ciphers if c not in GREASE]
+        exts = [e for e in self.extensions if e not in GREASE]
+        sigs = [s for s in self.sig_algs if s not in GREASE]
+
+        ver = _JA4_VERSION.get(self.max_version, "00")
+        sni_flag = "d" if self.sni else "i"
+        nc = f"{min(len(ciphers), 99):02d}"
+        ne = f"{min(len(exts), 99):02d}"
+        if self.alpn and self.alpn[0]:
+            a = self.alpn[0]
+            alpn = (a[0] + a[-1]) if a.isascii() else "99"
+        else:
+            alpn = "00"
+        ja4_a = f"t{ver}{sni_flag}{nc}{ne}{alpn}"
+
+        def hex12(values) -> str:
+            if not values:
+                return "000000000000"
+            joined = ",".join(f"{v:04x}" for v in values)
+            return hashlib.sha256(joined.encode()).hexdigest()[:12]
+
+        ja4_b = hex12(sorted(ciphers))
+        ext_for_c = sorted(e for e in exts if e not in (EXT_SERVER_NAME, EXT_ALPN))
+        if not ext_for_c and not sigs:
+            ja4_c = "000000000000"
+        else:
+            s = ",".join(f"{v:04x}" for v in ext_for_c) + "_" + ",".join(f"{v:04x}" for v in sigs)
+            ja4_c = hashlib.sha256(s.encode()).hexdigest()[:12]
+        return f"{ja4_a}_{ja4_b}_{ja4_c}"
 
 
 class _Reader:
@@ -160,4 +206,7 @@ def _parse_extension(ext_type: int, r: _Reader, hello: ClientHello) -> None:
     elif ext_type == EXT_ALPN:
         r.u16()
         while r.remaining() >= 1:
-            hello.alpn.append(r.take(r.u8()).decode("ascii", errors="replace"))
+            hello.alpn.append(bytes(r.take(r.u8())).decode("ascii", errors="replace"))
+    elif ext_type == EXT_SIGNATURE_ALGORITHMS:
+        n = r.u16()
+        hello.sig_algs = [r.u16() for _ in range(n // 2)]

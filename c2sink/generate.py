@@ -38,6 +38,10 @@ def build_client_hello(sni: Optional[str], ciphers: Optional[List[int]] = None,
     extensions += ext(0x000a, groups)
     # ec_point_formats
     extensions += ext(0x000b, struct.pack("!BB", 1, 0))
+    # signature_algorithms (a few common ones)
+    sigs = [0x0403, 0x0804, 0x0401]
+    sig_bytes = b"".join(struct.pack("!H", s) for s in sigs)
+    extensions += ext(0x000d, struct.pack("!H", len(sig_bytes)) + sig_bytes)
     # alpn h2,http/1.1
     protos = b"\x02h2\x08http/1.1"
     extensions += ext(0x0010, struct.pack("!H", len(protos)) + protos)
