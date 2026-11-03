@@ -30,11 +30,12 @@ printf "%s\n" "${BOLD}c2sink — passive sinkhole for a BGP C2 blackhole feed${R
 printf "%s\n\n" "${DIM}an ISP blackholes a C2 prefix; this recovers WHICH customers are infected${R}"
 beat 2
 
-say "The feed: the blackholed C2 destinations, with the labels the feed already has."
+say "The feed: the blackholed prefixes, with the labels the feed already has."
 cat > examples/_demo_feed.txt <<'EOF'
-127.0.3.10  ExampleLoader
-127.0.3.20  ExampleStealer
-127.0.3.30  ExampleProxy
+127.0.3.0/24  ExampleLoaderNet
+127.0.3.20    ExampleStealer
+127.0.3.30    ExampleProxy
+127.0.9.0/24  ExampleQuiet
 EOF
 run "cat examples/_demo_feed.txt"; beat 2
 
@@ -61,7 +62,7 @@ async def contact(src, dst, payload):
     except Exception: pass
 async def main():
     await contact("127.0.1.11","127.0.3.10", build_client_hello("api.exampleloader.cc"))
-    await contact("127.0.1.11","127.0.3.10", build_client_hello("api.exampleloader.cc"))
+    await contact("127.0.1.11","127.0.3.11", build_client_hello("api.exampleloader.cc"))
     await contact("127.0.1.12","127.0.3.20", build_http_get("panel.examplestealer.su","/gate.php","Mozilla/4.0 (compatible)"))
     await contact("127.0.1.13","127.0.3.30", build_client_hello(None))
     await contact("127.0.1.11","127.0.3.30", build_client_hello("cdn.exampleproxy.to"))
@@ -71,8 +72,8 @@ PY
 beat 2
 sleep 1; kill "$SINK" 2>/dev/null; wait "$SINK" 2>/dev/null || true; SINK=
 
-say "Intelligence 1 — feed health: which listed C2s are still live (what the operator cares about)."
-run "PYTHONPATH=. python -m c2sink report --log $LOG --health"; beat 3
+say "Intelligence 1 — feed health per prefix: recently-seen vs no-traffic (prune) (what the operator cares about)."
+run "PYTHONPATH=. python -m c2sink report --log $LOG --health --feed examples/_demo_feed.txt"; beat 3
 
 say "Intelligence 2 — client fingerprint: JA4 identifies the malware's TLS stack across IPs/SNIs."
 run "PYTHONPATH=. python -m c2sink report --log $LOG | grep -A6 127.0.1.13"; beat 3

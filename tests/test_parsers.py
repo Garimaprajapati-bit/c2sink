@@ -68,24 +68,46 @@ def test_iptables_rules_pick_right_tool():
     assert any("iptables -t nat -A C2SINK -d 203.0.113.0/24" in r for r in rules)
 
 
-def test_feed_health_groups_by_destination():
+def test_feed_health_aggregates_to_prefix_and_shows_dark_entries():
+    from c2sink.feed import parse_feed
     from c2sink.report import build_health, render_health
+    feed = parse_feed([
+        "203.0.113.0/24 Loader",      # a /24: two different addresses hit should merge
+        "198.51.100.5   Stealer",
+        "192.0.2.0/24   Quiet",        # listed but no traffic -> must still appear
+    ])
     events = [
         {"ts": 1000.0, "src_ip": "10.0.0.1", "dst_ip": "203.0.113.10", "proto": "tls",
-         "sni": "a.bad.example", "feed_label": "Loader", "http_host": None},
-        {"ts": 1001.0, "src_ip": "10.0.0.2", "dst_ip": "203.0.113.10", "proto": "tls",
-         "sni": "a.bad.example", "feed_label": "Loader", "http_host": None},
-        {"ts": 1002.0, "src_ip": "10.0.0.3", "dst_ip": "203.0.113.20", "proto": "tls",
-         "sni": None, "feed_label": "Proxy", "http_host": None},
+         "sni": "a.bad.example", "http_host": None},
+        {"ts": 1001.0, "src_ip": "10.0.0.2", "dst_ip": "203.0.113.200", "proto": "tls",
+         "sni": "a.bad.example", "http_host": None},
     ]
-    health = build_health(events)
-    assert set(health) == {"203.0.113.10", "203.0.113.20"}
-    assert health["203.0.113.10"].hits == 2
-    assert len(health["203.0.113.10"].sources) == 2
-    assert health["203.0.113.20"].had_tls_without_sni is True
-    # at ts just after, both are LIVE; far in the future both go dark
-    assert "LIVE" in render_health(health, now=1003.0)
-    assert "dark" in render_health(health, now=1003.0 + 48 * 3600)
+    health = build_health(events, feed)
+    # both addresses in the /24 aggregate to the one prefix
+    assert health["203.0.113.0/24"].hits == 2
+    assert health["203.0.113.0/24"].dst_ips == {"203.0.113.10", "203.0.113.200"}
+    # the listed-but-silent prefix is present with zero hits (prune candidate)
+    assert health["192.0.2.0/24"].hits == 0
+    out = render_health(health, now=1002.0)
+    assert "recently-seen" in out
+    assert "no-traffic" in out and "prune candidate" in out
+    # old traffic reads as "quiet", not a liveness claim
+    assert "quiet" in render_health(health, now=1002.0 + 48 * 3600)
+
+
+def test_ja4_matches_foxio_reference_vector():
+    # FoxIO JA4 technical_details worked example (independent reference):
+    #   t13d1516h2_8daaf6152771_e5627efa2ab1
+    from c2sink.tls import ClientHello
+    ciphers = [0x1301, 0x1302, 0x1303, 0xc02b, 0xc02f, 0xc02c, 0xc030, 0xcca9,
+               0xcca8, 0xc013, 0xc014, 0x009c, 0x009d, 0x002f, 0x0035]
+    exts = [0x001b, 0x0000, 0x0033, 0x0010, 0x4469, 0x0017, 0x002d, 0x000d,
+            0x0005, 0x0023, 0x0012, 0x002b, 0xff01, 0x000b, 0x000a, 0x0015]
+    sigs = [0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601]
+    h = ClientHello(record_version=0x0303, hello_version=0x0303, ciphers=ciphers,
+                    extensions=exts, supported_versions=[0x0304], sig_algs=sigs,
+                    alpn=["h2", "http/1.1"], sni="example.com")
+    assert h.ja4 == "t13d1516h2_8daaf6152771_e5627efa2ab1"
 
 
 def test_ja4_structure_and_sni_flag():

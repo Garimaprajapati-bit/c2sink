@@ -151,24 +151,26 @@ def render_text(subs: Dict[str, SubscriberContacts]) -> str:
 
 @dataclass
 class PrefixHealth:
-    """Per feed entry: is this blackholed destination still being contacted,
-    by how many distinct subscribers, and does any of the traffic look like it
-    might be a false positive (legitimate traffic caught by the prefix)."""
-    dst_ip: str
+    """Per feed entry (a prefix, not a single address): how much traffic it is
+    catching and from how many distinct sources, when it was last seen, and
+    whether the traffic looks like it might be legitimate (a false positive)."""
+    prefix: str                       # the feed CIDR, e.g. "203.0.113.0/24"
     feed_label: Optional[str]
-    first_seen: float
-    last_seen: float
+    first_seen: Optional[float] = None
+    last_seen: Optional[float] = None
     hits: int = 0
     sources: set = field(default_factory=set)
+    dst_ips: set = field(default_factory=set)   # which addresses in the prefix were hit
     snis: set = field(default_factory=set)
     http_hosts: set = field(default_factory=set)
     had_tls_without_sni: bool = False
 
     def observe(self, ev: dict) -> None:
         self.hits += 1
-        self.first_seen = min(self.first_seen, ev["ts"])
-        self.last_seen = max(self.last_seen, ev["ts"])
+        self.first_seen = ev["ts"] if self.first_seen is None else min(self.first_seen, ev["ts"])
+        self.last_seen = ev["ts"] if self.last_seen is None else max(self.last_seen, ev["ts"])
         self.sources.add(ev["src_ip"])
+        self.dst_ips.add(ev["dst_ip"])
         if ev.get("sni"):
             self.snis.add(ev["sni"])
         if ev.get("http_host"):
@@ -177,41 +179,67 @@ class PrefixHealth:
             self.had_tls_without_sni = True
 
 
-def build_health(events: Iterable[dict]) -> Dict[str, PrefixHealth]:
-    """Group by blackholed destination, so the feed operator can see which
-    listed C2s are live and which look dark."""
+def build_health(events: Iterable[dict], feed_entries=None) -> Dict[str, PrefixHealth]:
+    """Build one record per feed entry, keyed by its prefix. If the feed is
+    passed, every listed entry appears, including those with no traffic (so a
+    feed operator can see what to prune); traffic is aggregated to the matching
+    prefix. Without the feed, records fall back to per-destination grouping."""
+    from .feed import FeedIndex
+
     health: Dict[str, PrefixHealth] = {}
+    index = None
+    if feed_entries is not None:
+        index = FeedIndex(feed_entries)
+        for e in feed_entries:
+            key = str(e.network)
+            health[key] = PrefixHealth(key, e.label)
+
     for ev in events:
-        dst = ev["dst_ip"]
-        if dst not in health:
-            health[dst] = PrefixHealth(dst, ev.get("feed_label"), ev["ts"], ev["ts"])
-        health[dst].observe(ev)
+        key = None
+        if index is not None:
+            match = index.lookup(ev["dst_ip"])
+            if match is not None:
+                key = str(match.network)
+        if key is None:
+            key = ev["dst_ip"]      # not in the feed (or no feed given)
+            if key not in health:
+                health[key] = PrefixHealth(key, ev.get("feed_label"))
+        health[key].observe(ev)
     return health
 
 
 def render_health(health: Dict[str, PrefixHealth], now: Optional[float] = None,
-                  dark_after_hours: float = 24.0) -> str:
+                  recent_hours: float = 24.0) -> str:
     import time as _time
     now = now if now is not None else _time.time()
+    with_traffic = sum(1 for h in health.values() if h.hits)
     lines = [
-        "Feed-health report (what the sinkhole sees per listed destination)",
-        "=" * 66,
-        f"listed destinations with traffic: {len(health)}",
+        "Feed-health report (traffic seen per listed prefix)",
+        "=" * 52,
+        f"listed prefixes: {len(health)}   with traffic: {with_traffic}",
         "",
     ]
-    for h in sorted(health.values(), key=lambda x: x.hits, reverse=True):
+    # sort: most hits first, then zero-traffic entries last
+    for h in sorted(health.values(), key=lambda x: (x.hits, x.last_seen or 0), reverse=True):
+        if not h.hits:
+            lines.append(f"{h.prefix}  [{h.feed_label or 'no-label'}]  no-traffic")
+            lines.append("  nothing seen in this window (prune candidate)")
+            lines.append("")
+            continue
         age_h = (now - h.last_seen) / 3600.0
-        state = "LIVE" if age_h <= dark_after_hours else "dark"
-        lines.append(f"{h.dst_ip}  [{h.feed_label or 'no-label'}]  {state}")
-        lines.append(f"  hits / subscribers : {h.hits} / {len(h.sources)}")
-        lines.append(f"  last contact       : {_iso(h.last_seen)}  ({age_h:.1f} h ago)")
+        state = "recently-seen" if age_h <= recent_hours else "quiet"
+        lines.append(f"{h.prefix}  [{h.feed_label or 'no-label'}]  {state}")
+        lines.append(f"  hits / sources     : {h.hits} / {len(h.sources)}")
+        lines.append(f"  last seen          : {_iso(h.last_seen)}  ({age_h:.1f} h ago)")
+        if len(h.dst_ips) > 1:
+            lines.append(f"  addresses hit      : {', '.join(sorted(h.dst_ips))}")
         names = sorted(h.snis | h.http_hosts)
         if names:
             lines.append(f"  names seen         : {', '.join(names)}")
-        # false-positive hint: many distinct subscribers AND a resolvable-looking
-        # name, i.e. the prefix may carry legitimate traffic, not just a C2.
+        # possible false positive: many distinct sources all asking for a real
+        # looking name suggests legitimate traffic caught by the prefix.
         if len(h.sources) >= 5 and names:
-            lines.append("  ** review: many subscribers + named service; possible false positive **")
+            lines.append("  ** review: many sources + named service; possible false positive **")
         lines.append("")
     return "\n".join(lines)
 

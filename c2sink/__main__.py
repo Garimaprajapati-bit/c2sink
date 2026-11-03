@@ -49,7 +49,9 @@ def _serve(args) -> int:
 def _report(args) -> int:
     events = load_events(args.log)
     if args.health:
-        print(render_health(build_health(events)))
+        from .feed import load_feed
+        entries = load_feed(args.feed) if args.feed else None
+        print(render_health(build_health(events, entries)))
     elif args.beacons:
         print(render_beacons(find_beacons(events)))
     else:
@@ -88,7 +90,8 @@ def main(argv=None) -> int:
     r = sub.add_parser("report", help="build the per-subscriber report")
     r.add_argument("--log", default="events.jsonl")
     r.add_argument("--json", action="store_true", help="subscriber report as JSON")
-    r.add_argument("--health", action="store_true", help="feed-health report (per listed destination) instead")
+    r.add_argument("--health", action="store_true", help="feed-health report (per listed prefix) instead")
+    r.add_argument("--feed", help="with --health: seed from the feed so zero-traffic prefixes also appear")
     r.add_argument("--beacons", action="store_true", help="beaconing report (regular call-home patterns) instead")
     r.set_defaults(func=_report)
 

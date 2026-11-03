@@ -29,15 +29,18 @@ It is not a takedown tool and it doesn't try to clean infected machines.
 Each connection to a listed C2 is logged from the first read only — no
 decryption, since the TLS ClientHello and the HTTP request line are both in the
 clear. For TLS that's the SNI, ALPN, version and a JA4 and JA3 fingerprint
-(GREASE stripped). For HTTP it's the method, path, Host and User-Agent. If the
+(GREASE stripped). The JA4 output matches FoxIO's reference vector (there's a
+test for it). For HTTP it's the method, path, Host and User-Agent. If the
 ClientHello was split across packets, that's noted rather than dropped.
 
 The reports are built from that log, offline:
 
-- **Feed health** — per listed C2: how many hits, how many distinct sources,
-  when it was last seen, and whether it still looks live. This is the one that
-  matters if you run the feed: it tells you which entries are still earning
-  their place.
+- **Feed health** — one row per feed entry, aggregated to the prefix (so a /24
+  doesn't fan out into dozens of rows): hits, distinct sources, when it was last
+  seen. If you pass the feed, entries that got *no* traffic show up too, marked
+  as prune candidates — for a feed operator that's half the value. A row is
+  "recently-seen" or "quiet"; it's about when traffic last hit the prefix, not a
+  claim that the C2 server itself is up.
 - **False-positive candidates** — a prefix getting hit by lots of different
   sources that are all asking for a real-looking hostname is probably catching
   legitimate traffic, and worth a second look before it causes an outage.
@@ -67,7 +70,7 @@ python -m c2sink rules --feed examples/feed.txt --exabgp \
     --nh4 192.0.2.10 --nh6 2001:db8::10 --community 65000:666
 
 # then read the log
-python -m c2sink report --log events.jsonl --health
+python -m c2sink report --log events.jsonl --health --feed examples/feed.txt
 python -m c2sink report --log events.jsonl --beacons
 python -m c2sink report --log events.jsonl            # subscriber view
 ```

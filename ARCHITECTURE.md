@@ -62,12 +62,16 @@ depend only on the log. Nothing depends on the network except `server` and
 session, then reporting.
 
 The intelligence lives entirely in `report.py`, computed offline from the log:
-**JA4/JA3** client fingerprints (in `tls.py`) survive IP and SNI changes;
-**feed health** marks each listed C2 live or dark and flags possible false
-positives (many distinct subscribers + a named service); **beaconing** groups
-by (src, C2) and flags pairs whose inter-arrival times are regular enough
-(low jitter) to look automated rather than human. Adding an analysis is a new
-pure function over the log, never a change to capture.
+**JA4/JA3** client fingerprints (in `tls.py`) survive IP and SNI changes — the
+JA4 output is checked against FoxIO's published reference vector in the tests;
+**feed health** takes the feed plus the log, aggregates traffic to each feed
+prefix (so a /24 is one row, not many), includes listed prefixes that saw *no*
+traffic as prune candidates, and flags possible false positives (many distinct
+sources + a named service) — a row is "recently-seen" or "quiet" by when the
+prefix was last hit, which is not a claim about the C2 host itself; **beaconing**
+groups by (src, C2) and flags pairs whose inter-arrival times are regular enough
+(low coefficient of variation) to look automated rather than human. Adding an
+analysis is a new pure function over the log, never a change to capture.
 
 ## Key design decisions
 
