@@ -19,7 +19,7 @@ Share it as:
   (install agg from https://github.com/asciinema/agg), or
 - **an MP4** (best for LinkedIn/WhatsApp): `ffmpeg -i demo.gif -movflags +faststart -pix_fmt yuv420p demo.mp4`
 
-A ready-made `demo.cast` and `demo.gif` from one real run are already in this
+A ready-made `demo.cast` and `demo.mp4` from one real run are already in this
 folder, so you can send those directly or re-record your own.
 
 ## Option B — screen recorder (if you want your face/voice or a real desktop)

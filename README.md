@@ -1,124 +1,91 @@
-# c2sink — turn a C2 blackhole into live threat intelligence
+# c2sink
 
-![demo](examples/demo.gif)
+A blackhole feed tells you which IPs are bad and you drop the traffic to them.
+That works, but you throw away everything the dropped packets could have told
+you: whether those C2s are still active, what the infected machines look like,
+and whether a prefix you're blackholing has started catching normal traffic by
+mistake.
 
+c2sink keeps that information. Instead of dropping traffic to a listed prefix,
+you point it at one host that answers the TCP handshake, reads the first few
+bytes the client sends, writes down what it saw, and hangs up. It never sends
+anything back. It's the "C2 emulator" idea without actually emulating a C2 —
+just a quiet collector for the traffic a blackhole normally discards.
 
-A BGP C2 blackhole feed stops traffic to known command-and-control (C2)
-infrastructure, but the dropped packets could tell the operator a great deal:
-which C2s are still live, what the infected clients look like, and whether a
-listed prefix is starting to catch legitimate traffic. The blackhole throws
-that away.
+![what the sinkhole produces](examples/demo_output.png)
 
-`c2sink` keeps it. Instead of dropping C2-bound traffic, the network forwards
-it to one **passive** host that completes the TCP handshake, reads only the
-first bytes the client sends, and records them. It is a telemetry collector for
-redirected botnet traffic — the "C2 emulator" idea, minus any emulation of the
-C2 itself.
+## What "passive" means here
 
-```
-  infected host ──TCP SYN──▶  [ edge router: feed prefix ]
-                                     │  announce prefix with next-hop = sink,
-                                     │  or REDIRECT to the sink
-                                     ▼
-                               [ c2sink host ]  (passive)
-                                 • completes the TCP handshake (kernel only)
-                                 • reads the first bytes, never writes back
-                                 • records dst (C2), src, SNI, JA4/JA3, HTTP, time
-                                     │
-                     ┌───────────────┼────────────────┐
-              feed-health        beaconing        subscriber view
-         (live/dark, FP signal) (call-home timing) (abuse desk; optional)
-```
+The kernel completes the TCP handshake, because you can't read the first bytes
+without it. After that the process does nothing: no reply, no C2 commands, no
+tasking, no touching the device. It watches, it doesn't talk. There's an
+end-to-end test that connects to the sink and checks it gets zero bytes back,
+so that's not just a claim in a README.
 
-## The passive boundary (exactly what it does and does not do)
+It is not a takedown tool and it doesn't try to clean infected machines.
 
-| | |
-|---|---|
-| TCP handshake | completed by the **kernel** (unavoidable to receive the first bytes) |
-| Application-level response | **none** — the sink never writes a byte back |
-| C2 commands / tasking | **none** |
-| Payload execution | **none** |
+## What you get out of it
 
-The sink is an observer, not a C2 impersonator. It does not task, modify or
-"un-infect" devices. The end-to-end test asserts that every connection returns
-**zero bytes** from the sink, so this boundary is demonstrated, not just claimed.
+Each connection to a listed C2 is logged from the first read only — no
+decryption, since the TLS ClientHello and the HTTP request line are both in the
+clear. For TLS that's the SNI, ALPN, version and a JA4 and JA3 fingerprint
+(GREASE stripped). For HTTP it's the method, path, Host and User-Agent. If the
+ClientHello was split across packets, that's noted rather than dropped.
 
-## What it extracts (the intelligence)
+The reports are built from that log, offline:
 
-For every connection to a listed destination, from the first read only, no
-decryption (the ClientHello and HTTP request head are cleartext):
+- **Feed health** — per listed C2: how many hits, how many distinct sources,
+  when it was last seen, and whether it still looks live. This is the one that
+  matters if you run the feed: it tells you which entries are still earning
+  their place.
+- **False-positive candidates** — a prefix getting hit by lots of different
+  sources that are all asking for a real-looking hostname is probably catching
+  legitimate traffic, and worth a second look before it causes an outage.
+- **Beaconing** — pairs that call the same C2 on a steady timer. Malware checks
+  in on a schedule; people don't.
+- **Subscriber view** — which internal IP talked to which C2. Useful for an
+  abuse desk, but only before CGNAT. If you already get this from NetFlow, skip
+  it; the fingerprint and feed-health parts are the new bits.
 
-- **TLS client fingerprint**: **JA4** (FoxIO) and JA3, both GREASE-stripped,
-  plus SNI, offered ALPN and negotiated version — identifies the client stack
-  even across IPs and SNIs.
-- **HTTP metadata**: method, target, Host, User-Agent.
-- **Completeness**: whether the ClientHello was whole or split across segments.
-- The first 32 bytes in hex for anything else.
+Nothing is attributed beyond the label your feed already carries.
 
-From the event log it then derives:
+## Running it
 
-- **Feed health** (per listed C2): hits, unique subscribers, last contact, and
-  **live/dark** classification — which feed entries are still worth listing.
-- **False-positive candidates**: a listed prefix contacted by many distinct
-  subscribers with a named service, i.e. possibly legitimate traffic caught by
-  the prefix.
-- **Beaconing**: source→C2 pairs whose contacts arrive on a regular timer, the
-  signature of automated call-home rather than a human.
-- **Subscriber view** (optional, for an ISP's own abuse desk): which internal
-  IPs contacted which C2s. Most useful *before CGNAT*; an operator that already
-  derives this from NetFlow can ignore it and keep the feed-health and
-  fingerprint intelligence.
-
-No attribution beyond the feed's own label and the raw observed fields.
-
-## Install
-
-Pure standard-library Python 3.11+ (asyncio). Tests need `pytest` and
+Python 3.11+, standard library only (asyncio). The tests want `pytest` and
 `pytest-asyncio`.
 
 ```sh
-pip install pytest pytest-asyncio   # tests only
-```
-
-## Use
-
-```sh
-# 1. run the sink (binds v4+v6; append to a JSONL log)
+# run the sink (v4 + v6), appending to a JSONL log
 python -m c2sink serve --feed examples/feed.txt --port 8443 --log events.jsonl
 
-# 2. send C2-bound traffic to it (choose one):
-#    a) on the sink host, REDIRECT the feed prefixes to the sink port:
+# get the C2 traffic to it, either:
+#   a) REDIRECT the feed prefixes to the sink on this host
 python -m c2sink rules --feed examples/feed.txt --port 8443 | sudo sh
-#    b) or announce the feed prefixes into your network with the sink as
-#       next-hop, via ExaBGP (no-export, stays inside your AS):
+#   b) or announce them into your network with this host as next-hop (ExaBGP,
+#      no-export so it stays inside your AS)
 python -m c2sink rules --feed examples/feed.txt --exabgp \
     --nh4 192.0.2.10 --nh6 2001:db8::10 --community 65000:666
 
-# 3. reports from the same log:
-python -m c2sink report --log events.jsonl --health   # per listed C2: live/dark, false positives
-python -m c2sink report --log events.jsonl --beacons  # regular call-home patterns
-python -m c2sink report --log events.jsonl            # per subscriber (abuse desk; optional)
+# then read the log
+python -m c2sink report --log events.jsonl --health
+python -m c2sink report --log events.jsonl --beacons
+python -m c2sink report --log events.jsonl            # subscriber view
 ```
 
-### Feed format
-
-One IPv4/IPv6 address or CIDR per line, optional `# comment`, optional label:
+The feed file is one IP or CIDR per line, with an optional label:
 
 ```
-203.0.113.0/24  Mirai
+203.0.113.0/24   Mirai
 2001:db8:bad::/48 Emotet
-198.51.100.10   # no label
+198.51.100.10    # no label
 ```
 
-Export your existing blackhole feed into this and nothing else changes.
+Export your existing feed into that shape and you're done.
 
-## Original-destination recovery
-
-- With Linux `REDIRECT`, the sink reads the real C2 address via
-  `SO_ORIGINAL_DST`, so one listener serves every prefix and the report shows
-  the true destination.
-- With the ExaBGP next-hop approach, the sink host receives the packets for the
-  announced prefixes directly; the accept address is the C2 address.
+With Linux REDIRECT the sink recovers the real C2 address and port from
+`SO_ORIGINAL_DST`, so one listener covers every prefix. With the ExaBGP
+next-hop route the host receives the prefixes directly and the accept address
+is the C2.
 
 ## Tests
 
@@ -126,29 +93,24 @@ Export your existing blackhole feed into this and nothing else changes.
 PYTHONPATH=. python -m pytest -q
 ```
 
-Covers feed parsing and longest-prefix lookup, TLS ClientHello parsing (SNI,
-stable JA3, GREASE handling, truncated hello), HTTP parsing, rule generation,
-and an end-to-end run proving the sink records a connection **and replies with
-zero bytes**.
+They cover the feed parsing and prefix lookup, the TLS parser (SNI, JA4/JA3,
+GREASE, a truncated hello), HTTP parsing, rule generation, beacon detection,
+and the end-to-end run that checks the sink stays silent.
 
-## Limits (by design, and known)
+## Known limits
 
-- Only the first read is inspected; the sink never continues a conversation.
-- With Encrypted ClientHello (ECH) the real SNI is hidden; the outer name and
-  the fact of the connection are still recorded. DNS-side controls remain the
-  fallback there.
-- A ClientHello split across TCP segments is recorded and flagged
-  `complete:false`; reassembly across reads is a possible extension.
-- This identifies infected subscribers; it is not a takedown tool.
+- Only the first read is looked at; it never follows a conversation.
+- Encrypted ClientHello hides the real SNI. You still see the outer name and
+  that the connection happened; DNS-based controls are the fallback there.
+- A ClientHello split across segments is recorded and flagged, not reassembled
+  (yet).
 
-## Design
+## More detail
 
-See `ARCHITECTURE.md` for the component layout, the placement decision
-(before CGNAT, like NetFlow), original-destination recovery, and failure modes.
+`ARCHITECTURE.md` has the component breakdown, why the sink sits before CGNAT,
+how the original destination is recovered, and the failure modes. A full
+captured run (real REDIRECT, three sources, three C2s) is in `examples/DEMO.md`;
+`sudo ./examples/reproduce.sh` regenerates it.
 
-## Status
-
-Prototype built as a concrete proposal, not a finished product. Everything here
-runs and is tested; it has not been deployed against a live feed. The captured
-reproduction (real `nat REDIRECT` + `SO_ORIGINAL_DST`, three subscribers, three
-C2s) is in `examples/DEMO.md`; rerun it with `sudo ./examples/reproduce.sh`.
+This is a working prototype, not something that's been run against a live feed
+yet.
