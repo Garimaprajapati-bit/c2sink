@@ -29,6 +29,7 @@ class SubscriberContacts:
     user_agents: set = field(default_factory=set)
     ja3s: set = field(default_factory=set)
     ja4s: set = field(default_factory=set)
+    dns_names: set = field(default_factory=set)
 
     def observe(self, ev: dict) -> None:
         self.connections += 1
@@ -38,7 +39,7 @@ class SubscriberContacts:
         for field_name, bucket in (
             ("feed_label", self.feed_labels), ("sni", self.snis),
             ("http_host", self.http_hosts), ("user_agent", self.user_agents),
-            ("ja3", self.ja3s), ("ja4", self.ja4s),
+            ("ja3", self.ja3s), ("ja4", self.ja4s), ("dns_qname", self.dns_names),
         ):
             value = ev.get(field_name)
             if value:
@@ -141,6 +142,8 @@ def render_text(subs: Dict[str, SubscriberContacts]) -> str:
             lines.append(f"  http host   : {', '.join(sorted(sub.http_hosts))}")
         if sub.user_agents:
             lines.append(f"  user-agent  : {', '.join(sorted(sub.user_agents))}")
+        if sub.dns_names:
+            lines.append(f"  dns         : {', '.join(sorted(sub.dns_names))}")
         if sub.ja4s:
             lines.append(f"  ja4         : {', '.join(sorted(sub.ja4s))}")
         if sub.ja3s:
@@ -175,6 +178,8 @@ class PrefixHealth:
             self.snis.add(ev["sni"])
         if ev.get("http_host"):
             self.http_hosts.add(ev["http_host"])
+        if ev.get("dns_qname"):
+            self.http_hosts.add(ev["dns_qname"])
         if ev.get("proto") == "tls" and not ev.get("sni"):
             self.had_tls_without_sni = True
 

@@ -46,6 +46,22 @@ def _serve(args) -> int:
     return 0
 
 
+def _ingest(args) -> int:
+    from .capture import ingest_pcap
+    from .feed import FeedIndex, load_feed
+    index = FeedIndex(load_feed(args.feed))
+    with open(args.log, "a", buffering=1, encoding="utf-8") as logf:
+        def on_event(ev):
+            logf.write(ev.to_json_line() + "\n")
+            if not args.quiet:
+                who = ev.sni or ev.http_host or ev.dns_qname or ev.proto
+                print(f"[{ev.transport}/{ev.proto}] {ev.src_ip} -> {ev.dst_ip}:{ev.dst_port} {who}",
+                      file=sys.stderr)
+        n = ingest_pcap(args.pcap, index, on_event)
+    print(f"read {n} packets from {args.pcap}", file=sys.stderr)
+    return 0
+
+
 def _report(args) -> int:
     events = load_events(args.log)
     if args.health:
@@ -94,6 +110,13 @@ def main(argv=None) -> int:
     r.add_argument("--feed", help="with --health: seed from the feed so zero-traffic prefixes also appear")
     r.add_argument("--beacons", action="store_true", help="beaconing report (regular call-home patterns) instead")
     r.set_defaults(func=_report)
+
+    i = sub.add_parser("ingest", help="replay a pcap through the analysis pipeline")
+    i.add_argument("--pcap", required=True)
+    i.add_argument("--feed", required=True)
+    i.add_argument("--log", default="events.jsonl")
+    i.add_argument("--quiet", action="store_true")
+    i.set_defaults(func=_ingest)
 
     g = sub.add_parser("rules", help="emit redirect rules for the feed")
     g.add_argument("--feed", required=True)

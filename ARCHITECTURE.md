@@ -48,18 +48,25 @@ Placement matters and is a deliberate choice, not an accident:
 |---|---|
 | `feed.py` | Parse the feed; longest-prefix lookup; emit REDIRECT / ExaBGP rules. |
 | `server.py` | Accept, recover the original destination, read the first bytes, build an `Event`, never write back, close. |
+| `analysis.py` | The one place a captured first-payload becomes an `Event` (TLS, HTTP, DNS, QUIC). Both the live sink and the pcap/TZSP path call it. |
+| `packet.py` | Parse a link-layer frame to a transport payload (Ethernet/raw/SLL, IPv4/IPv6, TCP/UDP). |
+| `pcap.py` / `tzsp.py` | Read a classic pcap file; decapsulate a TZSP-wrapped frame. |
+| `capture.py` | Reassemble packets into events: TCP in the client→server direction (so a split ClientHello is rejoined), UDP's first datagram per flow. `ingest_pcap` and `serve_tzsp` feed the same reassembler. |
 | `tls.py` | Parse a (possibly truncated) TLS ClientHello: SNI, versions, ALPN, JA4 and JA3. |
-| `http.py` | Parse a plaintext HTTP request head: method, target, Host, User-Agent. |
-| `report.py` | Derive from the event log: feed health (per C2), beaconing (per src→C2 pair), and the subscriber view. |
+| `http.py` / `dns.py` / `quic.py` | HTTP request head; DNS query name; QUIC Initial detection. |
+| `report.py` | Derive from the event log: feed health (per prefix), beaconing (per src→C2 pair), and the subscriber view. |
 | `generate.py` | Craft ClientHello / HTTP for tests and demos (no real malware). |
 | `__main__.py` | `serve` / `report` / `rules` CLI. |
 
-The parsers are pure functions of `bytes -> dataclass`, independent of the
-server and of each other, which is why they can be unit-tested directly and
-fuzzed. The server depends on the parsers and the feed index; the reports
-depend only on the log. Nothing depends on the network except `server` and
-`generate`. This is the same layering as a protocol stack: wire format, then
-session, then reporting.
+There are three layers, kept independent so each can change without the others:
+**capture** (`server.py` live, `capture.py` pcap/TZSP, `packet.py`/`pcap.py`/
+`tzsp.py`) only produces payloads; **protocol** (`analysis.py` with `tls`,
+`http`, `dns`, `quic`) turns a payload into an `Event`; **intelligence**
+(`report.py`) reads the event log. A capture source's only job is to hand
+`analysis.build_event` a 5-tuple and the first payload, so pcap replay, a live
+TZSP mirror and the live sink all yield identical events and identical reports.
+The parsers are pure functions of `bytes -> dataclass`, so they unit-test and
+fuzz directly; the reports depend only on the log.
 
 The intelligence lives entirely in `report.py`, computed offline from the log:
 **JA4/JA3** client fingerprints (in `tls.py`) survive IP and SNI changes — the

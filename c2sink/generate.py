@@ -84,3 +84,52 @@ async def send(host: str, port: int, payload: bytes, read_reply: bool = True) ->
     except (ConnectionError, asyncio.TimeoutError):
         pass
     return reply
+
+
+# --- packet / pcap builders (for tests and demo captures) ----------------
+
+import socket as _socket
+
+
+def _ipv4(src, dst, proto, payload):
+    import struct
+    s = _socket.inet_aton(src); d = _socket.inet_aton(dst)
+    total = 20 + len(payload)
+    hdr = struct.pack("!BBHHHBBH", 0x45, 0, total, 0, 0x4000, 64, proto, 0) + s + d
+    # checksum left 0 (fine for offline parsing)
+    return hdr + payload
+
+
+def tcp_segment(src, dst, sport, dport, seq, payload=b"", flags=0x18):
+    """Build an Ethernet+IPv4+TCP frame. flags default PSH|ACK; use 0x02 for SYN."""
+    import struct
+    tcp = struct.pack("!HHIIBBHHH", sport, dport, seq, 0, 0x50, flags, 65535, 0, 0) + payload
+    ip = _ipv4(src, dst, 6, tcp)
+    eth = b"\x00\x00\x00\x00\x00\x02" + b"\x00\x00\x00\x00\x00\x01" + b"\x08\x00"
+    return eth + ip
+
+
+def udp_datagram(src, dst, sport, dport, payload=b""):
+    import struct
+    udp = struct.pack("!HHHH", sport, dport, 8 + len(payload), 0) + payload
+    ip = _ipv4(src, dst, 17, udp)
+    eth = b"\x00\x00\x00\x00\x00\x02" + b"\x00\x00\x00\x00\x00\x01" + b"\x08\x00"
+    return eth + ip
+
+
+def write_pcap(path, frames, linktype=1):
+    """frames: iterable of (ts, frame_bytes). Writes a classic microsecond pcap."""
+    import struct
+    with open(path, "wb") as fh:
+        fh.write(struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, linktype))
+        for ts, frame in frames:
+            sec = int(ts); usec = int((ts - sec) * 1e6)
+            fh.write(struct.pack("<IIII", sec, usec, len(frame), len(frame)))
+            fh.write(frame)
+
+
+def dns_query(qname):
+    """A minimal DNS A-query datagram payload for `qname`."""
+    import struct
+    q = b"".join(bytes([len(l)]) + l.encode() for l in qname.split(".")) + b"\x00"
+    return struct.pack("!HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0) + q + struct.pack("!HH", 1, 1)

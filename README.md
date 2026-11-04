@@ -7,12 +7,33 @@ and whether a prefix you're blackholing has started catching normal traffic by
 mistake.
 
 c2sink keeps that information. Instead of dropping traffic to a listed prefix,
-you point it at one host that answers the TCP handshake, reads the first few
-bytes the client sends, writes down what it saw, and hangs up. It never sends
-anything back. It's the "C2 emulator" idea without actually emulating a C2 —
-just a quiet collector for the traffic a blackhole normally discards.
+you capture it, read the first few bytes each client sends, write down what you
+saw, and never send anything back. It's the "C2 emulator" idea without actually
+emulating a C2 — just a quiet collector for the traffic a blackhole normally
+discards.
 
 ![what the sinkhole produces](examples/demo_output.png)
+
+## Three layers, kept separate
+
+The capture mechanism and the analysis are deliberately decoupled, so the same
+engine works however the traffic reaches it:
+
+- **Capture** — how you get the traffic. Three options, all feeding the same
+  pipeline: replay a **pcap** (`c2sink ingest`, no setup at all); a live **TZSP**
+  stream from a router mirroring the C2 routes; or the **live sink** that answers
+  TCP handshakes for redirected traffic.
+- **Protocol** — parse each first payload: TLS ClientHello (SNI, ALPN, JA4/JA3),
+  HTTP request line, DNS query name, QUIC Initial. TCP is reassembled so a split
+  ClientHello is put back together; UDP's first datagram is taken as the contact.
+- **Intelligence** — feed health, beaconing, fingerprints, from the event log.
+
+One caveat worth stating: a purely passive capture of blackholed TCP sees only
+the SYNs — the client won't send its ClientHello until the handshake completes,
+so for TCP something has to answer the SYN (and only that). UDP is fine as pure
+capture; the first datagram already carries the payload. The live sink does the
+minimal TCP handshake; the pcap/TZSP paths assume the capture point sees the
+completed conversation (e.g. a mirror, or the sink's own traffic).
 
 ## What "passive" means here
 
@@ -56,6 +77,18 @@ Nothing is attributed beyond the label your feed already carries.
 
 Python 3.11+, standard library only (asyncio). The tests want `pytest` and
 `pytest-asyncio`.
+
+The quickest way to see it work needs no network and no root — replay the
+sample capture that ships with the repo:
+
+```sh
+python -m c2sink ingest --pcap examples/sample_capture.pcap --feed examples/sample_feed.txt --log events.jsonl
+python -m c2sink report --log events.jsonl --health --feed examples/sample_feed.txt
+python -m c2sink report --log events.jsonl --beacons
+```
+
+To collect your own traffic, either point a router's TZSP mirror of the C2
+routes at the sink host, or run the live sink and redirect the routes to it:
 
 ```sh
 # run the sink (v4 + v6), appending to a JSONL log

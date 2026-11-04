@@ -1,10 +1,12 @@
-"""The sinkhole server.
+"""The live sink: one capture source of several.
 
 Accepts TCP connections redirected here for any feed destination, reads only
-the first bytes the client sends, records metadata, and closes the connection
-without ever sending application data back. It is deliberately passive: it
-completes the TCP handshake (unavoidable, the kernel does it) and then stays
-silent, so an infected device gets no commands from it.
+the first bytes the client sends, records metadata via the shared analysis
+layer, and closes without ever sending application data back. It is the minimal
+TCP handshake responder: the kernel completes SYN/SYN-ACK/ACK and ACKs the data
+so the client sends its ClientHello, and nothing is ever written back. For
+offline pcap replay or a live TZSP mirror, see `capture.py`; both produce the
+same events through the same `analysis.build_event`.
 
 Original destination recovery:
 - Linux REDIRECT: SO_ORIGINAL_DST on the socket gives the real C2 address.
@@ -18,42 +20,13 @@ import asyncio
 import socket
 import struct
 import time
-from dataclasses import asdict, dataclass, field
 from typing import Optional
 
-from . import http as http_parser
-from . import tls as tls_parser
+from .analysis import Event, build_event
 from .feed import FeedIndex
 
 SO_ORIGINAL_DST = 80          # <linux/netfilter_ipv4.h>
 IP6T_SO_ORIGINAL_DST = 80     # <linux/netfilter_ipv6/ip6_tables.h>
-
-
-@dataclass
-class Event:
-    ts: float
-    src_ip: str
-    src_port: int
-    dst_ip: str
-    dst_port: int
-    bytes_from_client: int
-    proto: str = "unknown"          # tls | http | unknown
-    feed_label: Optional[str] = None
-    sni: Optional[str] = None
-    tls_version: Optional[int] = None
-    ja3: Optional[str] = None
-    ja4: Optional[str] = None
-    alpn: list = field(default_factory=list)
-    http_host: Optional[str] = None
-    http_method: Optional[str] = None
-    http_target: Optional[str] = None
-    user_agent: Optional[str] = None
-    first_bytes_hex: str = ""
-    client_hello_complete: Optional[bool] = None
-
-    def to_json_line(self) -> str:
-        import json
-        return json.dumps(asdict(self), separators=(",", ":"))
 
 
 def _original_dst(sock: socket.socket) -> Optional[tuple]:
@@ -95,7 +68,8 @@ class Sinkhole:
             data = await asyncio.wait_for(reader.read(self.read_bytes), timeout=self.read_timeout)
         except (asyncio.TimeoutError, ConnectionError):
             pass
-        event = self._build_event(peer, dst, data)
+        event = build_event(time.time(), peer[0], peer[1], dst[0], dst[1],
+                            data, self.feed, transport="tcp")
         try:
             self.on_event(event)
         finally:
@@ -111,33 +85,6 @@ class Sinkhole:
                 await writer.wait_closed()
             except (ConnectionError, asyncio.TimeoutError):
                 pass
-
-    def _build_event(self, peer, dst, data: bytes) -> Event:
-        entry = self.feed.lookup(dst[0])
-        ev = Event(
-            ts=time.time(), src_ip=peer[0], src_port=peer[1],
-            dst_ip=dst[0], dst_port=dst[1], bytes_from_client=len(data),
-            feed_label=entry.label if entry else None,
-            first_bytes_hex=data[:32].hex(),
-        )
-        hello = tls_parser.parse_client_hello(data)
-        if hello is not None:
-            ev.proto = "tls"
-            ev.sni = hello.sni
-            ev.tls_version = hello.max_version
-            ev.ja3 = hello.ja3
-            ev.ja4 = hello.ja4
-            ev.alpn = hello.alpn
-            ev.client_hello_complete = hello.complete
-            return ev
-        req = http_parser.parse_request(data)
-        if req is not None:
-            ev.proto = "http"
-            ev.http_host = req.host
-            ev.http_method = req.method
-            ev.http_target = req.target
-            ev.user_agent = req.user_agent
-        return ev
 
     async def serve(self, host: str, port: int) -> asyncio.base_events.Server:
         return await asyncio.start_server(self.handle, host, port, reuse_address=True)
