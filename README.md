@@ -35,6 +35,20 @@ capture; the first datagram already carries the payload. The live sink does the
 minimal TCP handshake; the pcap/TZSP paths assume the capture point sees the
 completed conversation (e.g. a mirror, or the sink's own traffic).
 
+## Subscriber privacy
+
+The client side of every connection is one of the operator's own subscribers,
+so the source IP is the sensitive field. `--pseudonymize` replaces it with a
+salted, keyed token (`anon:…`) *before* anything is written to disk, so a
+feed-only deployment never records a real subscriber address; the token is
+stable, so counts and beaconing still work, but it can't be read back without
+the secret salt (pass it via `--salt-file` or `C2SINK_SALT`, never commit it).
+The C2 address is kept in the clear — it's intelligence about an attacker, not
+data about a person. The feed-health report (the view you'd share with the feed
+operator) only ever reports a *count* of sources, never the addresses. Run the
+live sink with `--user` so it drops root right after binding. The threat model,
+and what these controls do and don't guarantee, is in `SECURITY.md`.
+
 ## What "passive" means here
 
 The kernel completes the TCP handshake, because you can't read the first bytes

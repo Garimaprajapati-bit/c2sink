@@ -17,7 +17,23 @@ from .report import (build, build_health, find_beacons, load_events,
 from .server import Sinkhole
 
 
+def _make_pseudonymizer(args):
+    """Build a Pseudonymizer if the operator asked for one, else None. Fails
+    loudly rather than silently logging real addresses when a salt is missing."""
+    from .privacy import Pseudonymizer, load_salt
+    if not getattr(args, "pseudonymize", False):
+        return None
+    salt = load_salt(getattr(args, "salt", None), getattr(args, "salt_file", None))
+    if not salt:
+        print("--pseudonymize needs a salt: pass --salt, --salt-file, or set C2SINK_SALT",
+              file=sys.stderr)
+        raise SystemExit(2)
+    return Pseudonymizer(salt)
+
+
 def _serve(args) -> int:
+    from .server import drop_privileges
+    pseud = _make_pseudonymizer(args)
     entries = load_feed(args.feed)
     index = FeedIndex(entries)
     logf = open(args.log, "a", buffering=1, encoding="utf-8")
@@ -28,12 +44,15 @@ def _serve(args) -> int:
             who = ev.sni or ev.http_host or ev.proto
             print(f"[{ev.proto}] {ev.src_ip} -> {ev.dst_ip}:{ev.dst_port} {who}", file=sys.stderr)
 
-    sink = Sinkhole(index, on_event, linger_seconds=args.linger)
+    sink = Sinkhole(index, on_event, linger_seconds=args.linger, pseudonymizer=pseud)
 
     async def run():
         server = await sink.serve(args.host, args.port)
+        if args.user:                       # shed root before serving hostile traffic
+            drop_privileges(args.user)
         addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
-        print(f"c2sink listening on {addrs}; feed entries: {len(index)}", file=sys.stderr)
+        print(f"c2sink listening on {addrs}; feed entries: {len(index)}"
+              f"{'; subscriber IPs pseudonymised' if pseud else ''}", file=sys.stderr)
         async with server:
             await server.serve_forever()
 
@@ -49,6 +68,7 @@ def _serve(args) -> int:
 def _ingest(args) -> int:
     from .capture import ingest_pcap
     from .feed import FeedIndex, load_feed
+    pseud = _make_pseudonymizer(args)
     index = FeedIndex(load_feed(args.feed))
     with open(args.log, "a", buffering=1, encoding="utf-8") as logf:
         def on_event(ev):
@@ -57,7 +77,7 @@ def _ingest(args) -> int:
                 who = ev.sni or ev.http_host or ev.dns_qname or ev.proto
                 print(f"[{ev.transport}/{ev.proto}] {ev.src_ip} -> {ev.dst_ip}:{ev.dst_port} {who}",
                       file=sys.stderr)
-        n = ingest_pcap(args.pcap, index, on_event)
+        n = ingest_pcap(args.pcap, index, on_event, pseudonymizer=pseud)
     print(f"read {n} packets from {args.pcap}", file=sys.stderr)
     return 0
 
@@ -90,6 +110,13 @@ def _rules(args) -> int:
     return 0
 
 
+def _add_privacy_flags(parser) -> None:
+    parser.add_argument("--pseudonymize", action="store_true",
+                        help="replace subscriber (source) IPs with a salted token before logging")
+    parser.add_argument("--salt", help="salt for --pseudonymize (prefer --salt-file or C2SINK_SALT)")
+    parser.add_argument("--salt-file", help="read the pseudonymisation salt from this file")
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="c2sink")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -100,7 +127,9 @@ def main(argv=None) -> int:
     s.add_argument("--port", type=int, default=8443)
     s.add_argument("--log", default="events.jsonl")
     s.add_argument("--linger", type=float, default=0.0, help="seconds to hold the socket open before closing")
+    s.add_argument("--user", help="drop to this unprivileged user after binding the port")
     s.add_argument("--quiet", action="store_true")
+    _add_privacy_flags(s)
     s.set_defaults(func=_serve)
 
     r = sub.add_parser("report", help="build the per-subscriber report")
@@ -116,6 +145,7 @@ def main(argv=None) -> int:
     i.add_argument("--feed", required=True)
     i.add_argument("--log", default="events.jsonl")
     i.add_argument("--quiet", action="store_true")
+    _add_privacy_flags(i)
     i.set_defaults(func=_ingest)
 
     g = sub.add_parser("rules", help="emit redirect rules for the feed")

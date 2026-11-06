@@ -17,6 +17,7 @@ Original destination recovery:
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import struct
 import time
@@ -49,12 +50,14 @@ def _original_dst(sock: socket.socket) -> Optional[tuple]:
 
 class Sinkhole:
     def __init__(self, feed_index: FeedIndex, on_event, read_bytes: int = 16384,
-                 read_timeout: float = 5.0, linger_seconds: float = 0.0):
+                 read_timeout: float = 5.0, linger_seconds: float = 0.0,
+                 pseudonymizer=None):
         self.feed = feed_index
         self.on_event = on_event
         self.read_bytes = read_bytes
         self.read_timeout = read_timeout
         self.linger_seconds = linger_seconds
+        self.pseudonymizer = pseudonymizer
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername") or ("?", 0)
@@ -69,7 +72,8 @@ class Sinkhole:
         except (asyncio.TimeoutError, ConnectionError):
             pass
         event = build_event(time.time(), peer[0], peer[1], dst[0], dst[1],
-                            data, self.feed, transport="tcp")
+                            data, self.feed, transport="tcp",
+                            pseudonymizer=self.pseudonymizer)
         try:
             self.on_event(event)
         finally:
@@ -88,3 +92,21 @@ class Sinkhole:
 
     async def serve(self, host: str, port: int) -> asyncio.base_events.Server:
         return await asyncio.start_server(self.handle, host, port, reuse_address=True)
+
+
+def drop_privileges(user: str) -> None:
+    """Shed root after the privileged socket is bound. The sink needs root only
+    to bind a low port and read SO_ORIGINAL_DST on redirected sockets; it should
+    not keep it while handling hostile traffic. Call this right after `serve`.
+    Groups are dropped before the uid so the change cannot be undone."""
+    import grp
+    import pwd
+
+    if os.getuid() != 0:
+        return                               # not root: nothing to drop
+    entry = pwd.getpwnam(user)
+    os.setgroups([g.gr_gid for g in grp.getgrall() if user in g.gr_mem] or [entry.pw_gid])
+    os.setgid(entry.pw_gid)
+    os.setuid(entry.pw_uid)
+    if os.getuid() != entry.pw_uid or os.geteuid() == 0:
+        raise PermissionError("failed to drop privileges")

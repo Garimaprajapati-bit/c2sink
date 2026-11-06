@@ -15,6 +15,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from .privacy import sanitize
+
+
+def _names(values: Iterable[str]) -> str:
+    """Join attacker-controlled names for display, stripped of control/escape
+    characters so a crafted SNI/Host can't inject terminal sequences."""
+    return ", ".join(sorted(sanitize(v) for v in values))
+
 
 @dataclass
 class SubscriberContacts:
@@ -137,13 +145,13 @@ def render_text(subs: Dict[str, SubscriberContacts]) -> str:
         if sub.feed_labels:
             lines.append(f"  feed labels : {', '.join(sorted(sub.feed_labels))}")
         if sub.snis:
-            lines.append(f"  tls sni     : {', '.join(sorted(sub.snis))}")
+            lines.append(f"  tls sni     : {_names(sub.snis)}")
         if sub.http_hosts:
-            lines.append(f"  http host   : {', '.join(sorted(sub.http_hosts))}")
+            lines.append(f"  http host   : {_names(sub.http_hosts)}")
         if sub.user_agents:
-            lines.append(f"  user-agent  : {', '.join(sorted(sub.user_agents))}")
+            lines.append(f"  user-agent  : {_names(sub.user_agents)}")
         if sub.dns_names:
-            lines.append(f"  dns         : {', '.join(sorted(sub.dns_names))}")
+            lines.append(f"  dns         : {_names(sub.dns_names)}")
         if sub.ja4s:
             lines.append(f"  ja4         : {', '.join(sorted(sub.ja4s))}")
         if sub.ja3s:
@@ -238,9 +246,9 @@ def render_health(health: Dict[str, PrefixHealth], now: Optional[float] = None,
         lines.append(f"  last seen          : {_iso(h.last_seen)}  ({age_h:.1f} h ago)")
         if len(h.dst_ips) > 1:
             lines.append(f"  addresses hit      : {', '.join(sorted(h.dst_ips))}")
-        names = sorted(h.snis | h.http_hosts)
+        names = h.snis | h.http_hosts
         if names:
-            lines.append(f"  names seen         : {', '.join(names)}")
+            lines.append(f"  names seen         : {_names(names)}")
         # possible false positive: many distinct sources all asking for a real
         # looking name suggests legitimate traffic caught by the prefix.
         if len(h.sources) >= 5 and names:

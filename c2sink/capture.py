@@ -48,11 +48,12 @@ class _TcpFlow:
 
 class Reassembler:
     def __init__(self, feed_index: FeedIndex, on_event: Callable[[Event], None],
-                 max_bytes: int = 16384, max_flows: int = 4096):
+                 max_bytes: int = 16384, max_flows: int = 4096, pseudonymizer=None):
         self.feed = feed_index
         self.on_event = on_event
         self.max_bytes = max_bytes
         self.max_flows = max_flows
+        self.pseudonymizer = pseudonymizer
         self._tcp: Dict[Key, _TcpFlow] = {}
         self._udp_seen: set = set()
 
@@ -116,7 +117,7 @@ class Reassembler:
 
     def _emit(self, ts, src_ip, src_port, dst_ip, dst_port, payload, transport) -> None:
         ev = build_event(ts, src_ip, src_port, dst_ip, dst_port, payload,
-                         self.feed, transport=transport)
+                         self.feed, transport=transport, pseudonymizer=self.pseudonymizer)
         self.on_event(ev)
 
     def finalize(self) -> None:
@@ -125,9 +126,9 @@ class Reassembler:
 
 
 def ingest_pcap(path: str, feed_index: FeedIndex, on_event: Callable[[Event], None],
-                max_bytes: int = 16384) -> int:
+                max_bytes: int = 16384, pseudonymizer=None) -> int:
     """Replay a pcap through the reassembler. Returns the packet count read."""
-    r = Reassembler(feed_index, on_event, max_bytes)
+    r = Reassembler(feed_index, on_event, max_bytes, pseudonymizer=pseudonymizer)
     n = 0
     for ts, linktype, frame in read_pcap(path):
         n += 1
@@ -139,7 +140,8 @@ def ingest_pcap(path: str, feed_index: FeedIndex, on_event: Callable[[Event], No
 
 
 async def serve_tzsp(host: str, port: int, feed_index: FeedIndex,
-                     on_event: Callable[[Event], None], max_bytes: int = 16384):
+                     on_event: Callable[[Event], None], max_bytes: int = 16384,
+                     pseudonymizer=None):
     """Listen for TZSP-encapsulated packets over UDP and feed them to the same
     reassembler as a pcap. Returns the asyncio transport; call finalize() on the
     protocol's reassembler to flush open TCP flows."""
@@ -149,7 +151,7 @@ async def serve_tzsp(host: str, port: int, feed_index: FeedIndex,
     from . import tzsp
     from .packet import parse_frame as _parse
 
-    r = Reassembler(feed_index, on_event, max_bytes)
+    r = Reassembler(feed_index, on_event, max_bytes, pseudonymizer=pseudonymizer)
 
     class _Proto(asyncio.DatagramProtocol):
         def datagram_received(self, data, addr):

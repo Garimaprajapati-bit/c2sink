@@ -49,8 +49,14 @@ class Event:
 
 
 def build_event(ts: float, src_ip: str, src_port: int, dst_ip: str, dst_port: int,
-                payload: bytes, feed_index: FeedIndex, transport: str = "tcp") -> Event:
+                payload: bytes, feed_index: FeedIndex, transport: str = "tcp",
+                pseudonymizer=None) -> Event:
     entry = feed_index.lookup(dst_ip)
+    # The destination is the C2 (threat intel); keep it clear. The source is
+    # one of the operator's own subscribers, so pseudonymise it when asked,
+    # before it is ever written to the log.
+    if pseudonymizer is not None:
+        src_ip = pseudonymizer.ip(src_ip)
     ev = Event(
         ts=ts, src_ip=src_ip, src_port=src_port, dst_ip=dst_ip, dst_port=dst_port,
         bytes_from_client=len(payload), transport=transport,
