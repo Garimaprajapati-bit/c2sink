@@ -23,8 +23,12 @@ ETH_P_IP = 0x0800
 ETH_P_IPV6 = 0x86DD
 IPPROTO_TCP = 6
 IPPROTO_UDP = 17
-# IPv6 extension headers we skip over to reach TCP/UDP
-V6_EXT_HEADERS = {0, 43, 44, 60, 51, 50}
+# IPv6 extension headers that carry an 8-byte-unit length field, so we can skip
+# over them to reach TCP/UDP: hop-by-hop (0), routing (43), destination (60).
+V6_OPT_HEADERS = {0, 43, 60}
+V6_FRAGMENT = 44                # fixed 8-byte header (its 2nd byte is not a length)
+# ESP (50) and AH (51) are deliberately not skipped: past them the transport
+# header is encrypted/authenticated and cannot be read, so we stop and bail.
 
 
 @dataclass
@@ -50,13 +54,21 @@ def _l3(data: bytes, ethertype: int) -> Optional[Packet]:
         ihl = (data[0] & 0x0F) * 4
         if ihl < 20 or len(data) < ihl:
             return None
+        # Honour the IP total-length field so link-layer padding (minimum-size
+        # Ethernet frames are zero-padded to 60 bytes) and any trailing bytes
+        # don't leak into the payload. A zero/short value (e.g. a TSO/LRO
+        # offload capture) falls back to what was actually captured.
+        total_len = struct.unpack_from("!H", data, 2)[0]
+        end = min(total_len, len(data)) if total_len >= ihl else len(data)
         proto = data[9]
         src = socket.inet_ntop(socket.AF_INET, data[12:16])
         dst = socket.inet_ntop(socket.AF_INET, data[16:20])
-        return _l4(data[ihl:], proto, src, dst)
+        return _l4(data[ihl:end], proto, src, dst)
     if ethertype == ETH_P_IPV6:
         if len(data) < 40:
             return None
+        payload_len = struct.unpack_from("!H", data, 4)[0]
+        end = min(40 + payload_len, len(data)) if payload_len else len(data)
         proto = data[6]
         src = socket.inet_ntop(socket.AF_INET6, data[8:24])
         dst = socket.inet_ntop(socket.AF_INET6, data[24:40])
@@ -65,13 +77,17 @@ def _l3(data: bytes, ethertype: int) -> Optional[Packet]:
         for _ in range(8):
             if proto in (IPPROTO_TCP, IPPROTO_UDP):
                 break
-            if proto not in V6_EXT_HEADERS or off + 2 > len(data):
-                break
-            nxt = data[off]
-            ext_len = (data[off + 1] + 1) * 8
+            if off + 2 > end:
+                return None
+            if proto == V6_FRAGMENT:
+                nxt, ext_len = data[off], 8
+            elif proto in V6_OPT_HEADERS:
+                nxt, ext_len = data[off], (data[off + 1] + 1) * 8
+            else:
+                break            # ESP/AH/unknown: transport not readable
             proto = nxt
             off += ext_len
-        return _l4(data[off:], proto, src, dst)
+        return _l4(data[off:end], proto, src, dst)
     return None
 
 
@@ -89,7 +105,10 @@ def _l4(data: bytes, proto: int, src: str, dst: str) -> Optional[Packet]:
         if len(data) < 8:
             return None
         sport, dport, length = struct.unpack_from("!HHH", data, 0)
-        return Packet(src, dst, sport, dport, "udp", data[8:])
+        # The UDP length covers header + data; clamp to it so any padding that
+        # survived the L3 trim is still dropped.
+        end = min(length, len(data)) if length >= 8 else len(data)
+        return Packet(src, dst, sport, dport, "udp", data[8:end])
     return None
 
 

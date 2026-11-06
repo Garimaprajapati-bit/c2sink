@@ -48,18 +48,34 @@ class _TcpFlow:
 
 class Reassembler:
     def __init__(self, feed_index: FeedIndex, on_event: Callable[[Event], None],
-                 max_bytes: int = 16384):
+                 max_bytes: int = 16384, max_flows: int = 4096):
         self.feed = feed_index
         self.on_event = on_event
         self.max_bytes = max_bytes
+        self.max_flows = max_flows
         self._tcp: Dict[Key, _TcpFlow] = {}
         self._udp_seen: set = set()
+
+    def _new_flow(self, key: Key, ts: float) -> _TcpFlow:
+        # Bound memory on a long-running live stream: a sinkhole sees far more
+        # scans and half-open attempts than completed flows, so the flow table
+        # would otherwise grow without limit. Once over the cap, drop the oldest
+        # tracked flow (emitted ones carry the oldest timestamps, so they go
+        # first) before adding the new one.
+        if len(self._tcp) >= self.max_flows:
+            oldest = min(self._tcp, key=lambda k: self._tcp[k].first_ts)
+            self._tcp.pop(oldest, None)
+        flow = _TcpFlow(first_ts=ts)
+        self._tcp[key] = flow
+        return flow
 
     def feed_packet(self, ts: float, pkt: Packet) -> None:
         if pkt.transport == "udp":
             key = (pkt.src_ip, pkt.src_port, pkt.dst_ip, pkt.dst_port)
             if key in self._udp_seen:
                 return
+            if len(self._udp_seen) >= self.max_flows * 8:
+                self._udp_seen.clear()               # reset dedup, don't grow forever
             self._udp_seen.add(key)
             self._emit(ts, pkt.src_ip, pkt.src_port, pkt.dst_ip, pkt.dst_port,
                        pkt.payload, "udp")
@@ -68,7 +84,7 @@ class Reassembler:
         fwd = (pkt.src_ip, pkt.src_port, pkt.dst_ip, pkt.dst_port)
         rev = (pkt.dst_ip, pkt.dst_port, pkt.src_ip, pkt.src_port)
         if pkt.syn and not (pkt.tcp_flags & 0x10):   # SYN without ACK -> client side
-            flow = self._tcp.setdefault(fwd, _TcpFlow(first_ts=ts))
+            flow = self._tcp.get(fwd) or self._new_flow(fwd, ts)
             flow.isn = pkt.seq
             return
         if fwd in self._tcp:
@@ -79,10 +95,10 @@ class Reassembler:
             # no SYN seen; treat traffic toward a listed prefix as client->server
             if self.feed.lookup(pkt.dst_ip) is None:
                 return
-            flow = self._tcp.setdefault(fwd, _TcpFlow(first_ts=ts))
-        if pkt.payload and len(flow.segments) < 64:
+            flow = self._new_flow(fwd, ts)
+        if pkt.payload and not flow.emitted and len(flow.segments) < 64:
             flow.segments[pkt.seq] = pkt.payload
-        if pkt.tcp_flags & 0x05:                     # FIN or RST
+        if pkt.tcp_flags & 0x05 and not flow.emitted:   # FIN or RST
             flow.closed = True
             self._flush_tcp(fwd)
 
@@ -92,6 +108,9 @@ class Reassembler:
             return
         flow.emitted = True
         payload = flow.reassemble(self.max_bytes)
+        flow.segments = {}                           # free the buffered bytes; keep a
+        #                                              small tombstone so a post-close
+        #                                              retransmit isn't re-emitted.
         src_ip, src_port, dst_ip, dst_port = key
         self._emit(flow.first_ts, src_ip, src_port, dst_ip, dst_port, payload, "tcp")
 

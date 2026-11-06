@@ -147,13 +147,16 @@ def parse_client_hello(data: bytes) -> Optional[ClientHello]:
     if not looks_like_tls(data):
         return None
     r = _Reader(data)
+    # Create the record up front so a truncation inside the fixed header (the
+    # input can be as short as 6 bytes) still returns a partial hello rather
+    # than leaving `hello` unbound when the EOFError handler runs.
+    hello = ClientHello(record_version=0, hello_version=0, complete=False)
     try:
         r.u8()                       # content type
-        record_version = r.u16()
-        record_length = r.u16()
+        hello.record_version = r.u16()
+        hello.record_length = r.u16()
         r.u8()                       # handshake type (checked above)
         hs_length = r.u24()
-        hello = ClientHello(record_version=record_version, hello_version=0, record_length=record_length)
         hello.complete = r.remaining() >= hs_length
         hello.hello_version = r.u16()
         r.take(32)                   # random
