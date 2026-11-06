@@ -32,27 +32,39 @@ def _make_pseudonymizer(args):
 
 
 def _serve(args) -> int:
+    from .metrics import Metrics, serve_metrics
     from .server import drop_privileges
+    from .writer import EventWriter
+
     pseud = _make_pseudonymizer(args)
     entries = load_feed(args.feed)
     index = FeedIndex(entries)
-    logf = open(args.log, "a", buffering=1, encoding="utf-8")
+    metrics = Metrics()
+    writer = EventWriter(args.log, metrics=metrics, max_queue=args.max_queue, fsync=args.fsync)
 
     def on_event(ev):
-        logf.write(ev.to_json_line() + "\n")
+        writer.submit_event(ev)             # non-blocking; drops are counted, not hidden
         if not args.quiet:
             who = ev.sni or ev.http_host or ev.proto
             print(f"[{ev.proto}] {ev.src_ip} -> {ev.dst_ip}:{ev.dst_port} {who}", file=sys.stderr)
 
-    sink = Sinkhole(index, on_event, linger_seconds=args.linger, pseudonymizer=pseud)
+    sink = Sinkhole(index, on_event, read_bytes=args.max_bytes,
+                    linger_seconds=args.linger, pseudonymizer=pseud, metrics=metrics)
 
     async def run():
         server = await sink.serve(args.host, args.port)
-        if args.user:                       # shed root before serving hostile traffic
+        mserver = await serve_metrics(args.metrics_host, args.metrics_port, metrics) \
+            if args.metrics_port else None
+        if args.user:                       # after every privileged bind, before serving
             drop_privileges(args.user)
         addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
+        extra = []
+        if pseud:
+            extra.append("subscriber IPs pseudonymised")
+        if mserver is not None:
+            extra.append(f"metrics on :{args.metrics_port}/metrics")
         print(f"c2sink listening on {addrs}; feed entries: {len(index)}"
-              f"{'; subscriber IPs pseudonymised' if pseud else ''}", file=sys.stderr)
+              + (f"; {', '.join(extra)}" if extra else ""), file=sys.stderr)
         async with server:
             await server.serve_forever()
 
@@ -61,24 +73,33 @@ def _serve(args) -> int:
     except KeyboardInterrupt:
         pass
     finally:
-        logf.close()
+        writer.close()
+        if not args.quiet:
+            print(metrics.render_text(), file=sys.stderr)
     return 0
 
 
 def _ingest(args) -> int:
     from .capture import ingest_pcap
     from .feed import FeedIndex, load_feed
+    from .metrics import Metrics
+    from .writer import EventWriter
     pseud = _make_pseudonymizer(args)
     index = FeedIndex(load_feed(args.feed))
-    with open(args.log, "a", buffering=1, encoding="utf-8") as logf:
+    metrics = Metrics()
+    with EventWriter(args.log, metrics=metrics, max_queue=args.max_queue, fsync=args.fsync) as writer:
         def on_event(ev):
-            logf.write(ev.to_json_line() + "\n")
+            writer.submit_event(ev)
             if not args.quiet:
                 who = ev.sni or ev.http_host or ev.dns_qname or ev.proto
                 print(f"[{ev.transport}/{ev.proto}] {ev.src_ip} -> {ev.dst_ip}:{ev.dst_port} {who}",
                       file=sys.stderr)
-        n = ingest_pcap(args.pcap, index, on_event, pseudonymizer=pseud)
+        n = ingest_pcap(args.pcap, index, on_event, max_bytes=args.max_bytes,
+                        pseudonymizer=pseud, metrics=metrics, max_flows=args.max_flows,
+                        idle_timeout=args.idle_timeout, max_duration=args.max_duration)
     print(f"read {n} packets from {args.pcap}", file=sys.stderr)
+    if not args.quiet:
+        print(metrics.render_text(), file=sys.stderr)
     return 0
 
 
@@ -117,6 +138,23 @@ def _add_privacy_flags(parser) -> None:
     parser.add_argument("--salt-file", help="read the pseudonymisation salt from this file")
 
 
+def _add_writer_flags(parser) -> None:
+    parser.add_argument("--max-bytes", type=int, default=16384,
+                        help="max bytes read/reassembled per flow")
+    parser.add_argument("--max-queue", type=int, default=10000,
+                        help="writer queue depth; events are dropped (and counted) when full")
+    parser.add_argument("--fsync", action="store_true", help="fsync the log on each flush")
+
+
+def _add_flow_flags(parser) -> None:
+    parser.add_argument("--max-flows", type=int, default=4096,
+                        help="max concurrent TCP flows tracked")
+    parser.add_argument("--idle-timeout", type=float, default=60.0,
+                        help="flush a flow after this many seconds idle")
+    parser.add_argument("--max-duration", type=float, default=300.0,
+                        help="flush a flow open longer than this many seconds")
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="c2sink")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -128,8 +166,11 @@ def main(argv=None) -> int:
     s.add_argument("--log", default="events.jsonl")
     s.add_argument("--linger", type=float, default=0.0, help="seconds to hold the socket open before closing")
     s.add_argument("--user", help="drop to this unprivileged user after binding the port")
+    s.add_argument("--metrics-host", default="127.0.0.1")
+    s.add_argument("--metrics-port", type=int, help="serve Prometheus /metrics and /healthz on this port")
     s.add_argument("--quiet", action="store_true")
     _add_privacy_flags(s)
+    _add_writer_flags(s)
     s.set_defaults(func=_serve)
 
     r = sub.add_parser("report", help="build the per-subscriber report")
@@ -146,6 +187,8 @@ def main(argv=None) -> int:
     i.add_argument("--log", default="events.jsonl")
     i.add_argument("--quiet", action="store_true")
     _add_privacy_flags(i)
+    _add_writer_flags(i)
+    _add_flow_flags(i)
     i.set_defaults(func=_ingest)
 
     g = sub.add_parser("rules", help="emit redirect rules for the feed")

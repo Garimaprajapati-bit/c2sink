@@ -25,6 +25,7 @@ from typing import Optional
 
 from .analysis import Event, build_event
 from .feed import FeedIndex
+from .metrics import Metrics
 
 SO_ORIGINAL_DST = 80          # <linux/netfilter_ipv4.h>
 IP6T_SO_ORIGINAL_DST = 80     # <linux/netfilter_ipv6/ip6_tables.h>
@@ -51,13 +52,14 @@ def _original_dst(sock: socket.socket) -> Optional[tuple]:
 class Sinkhole:
     def __init__(self, feed_index: FeedIndex, on_event, read_bytes: int = 16384,
                  read_timeout: float = 5.0, linger_seconds: float = 0.0,
-                 pseudonymizer=None):
+                 pseudonymizer=None, metrics: Metrics = None):
         self.feed = feed_index
         self.on_event = on_event
         self.read_bytes = read_bytes
         self.read_timeout = read_timeout
         self.linger_seconds = linger_seconds
         self.pseudonymizer = pseudonymizer
+        self.metrics = metrics or Metrics()
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername") or ("?", 0)
@@ -74,6 +76,8 @@ class Sinkhole:
         event = build_event(time.time(), peer[0], peer[1], dst[0], dst[1],
                             data, self.feed, transport="tcp",
                             pseudonymizer=self.pseudonymizer)
+        self.metrics.packets += 1            # one observation per connection
+        self.metrics.record_event(event.proto)
         try:
             self.on_event(event)
         finally:
@@ -94,11 +98,30 @@ class Sinkhole:
         return await asyncio.start_server(self.handle, host, port, reuse_address=True)
 
 
+def _no_new_privs() -> None:
+    """Best-effort Linux prctl(PR_SET_NO_NEW_PRIVS): once set, a later exec can
+    never regain privileges via setuid binaries. Silently skipped off Linux."""
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        PR_SET_NO_NEW_PRIVS = 38
+        libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+    except Exception:
+        pass
+
+
 def drop_privileges(user: str) -> None:
     """Shed root after the privileged socket is bound. The sink needs root only
-    to bind a low port and read SO_ORIGINAL_DST on redirected sockets; it should
-    not keep it while handling hostile traffic. Call this right after `serve`.
-    Groups are dropped before the uid so the change cannot be undone."""
+    to bind a low port and read SO_ORIGINAL_DST on redirected sockets; it must
+    not keep it while parsing hostile traffic. Call this right after `serve`,
+    before serving. Supplementary groups and the gid are dropped before the uid
+    (order matters: the reverse would leave the privilege to undo the change),
+    and the drop is verified.
+
+    This is privilege *reduction* in one process. For full privilege
+    *separation*, run the collector as a non-root service whose only elevated
+    step is setting up the redirect/capture (documented in SECURITY.md), and
+    keep the feed and config files read-only to this account."""
     import grp
     import pwd
 
@@ -110,3 +133,10 @@ def drop_privileges(user: str) -> None:
     os.setuid(entry.pw_uid)
     if os.getuid() != entry.pw_uid or os.geteuid() == 0:
         raise PermissionError("failed to drop privileges")
+    try:
+        os.setuid(0)                         # must fail: prove root is unrecoverable
+    except OSError:
+        pass
+    else:
+        raise PermissionError("still able to regain root after drop")
+    _no_new_privs()

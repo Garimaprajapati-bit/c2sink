@@ -137,6 +137,31 @@ With Linux REDIRECT the sink recovers the real C2 address and port from
 next-hop route the host receives the prefixes directly and the accept address
 is the C2.
 
+## Running it in production
+
+It's a prototype, but it's built to bound its resource use and make its failures
+visible rather than silent:
+
+- **Bounded reassembly** — `--max-bytes` per flow, `--max-flows` concurrent,
+  `--idle-timeout` and `--max-duration` to flush and free stuck flows. Hostile
+  traffic can't grow memory without limit; overlaps are first-writer-wins.
+- **Durable event writing** — events go through a bounded queue to an
+  append-only log; if traffic outruns the disk, events are dropped **and
+  counted** (`--max-queue` sizes the buffer), never silently lost. `--fsync`
+  forces each flush to disk.
+- **Least privilege** — `serve --user <account>` drops root right after binding.
+- **Operational metrics** — `serve --metrics-port 9090` exposes `/metrics`
+  (Prometheus) and `/healthz`; `ingest` prints a summary at the end. They report
+  packets, events, parse failures, reassembly timeouts, dropped events and queue
+  depth, so you can see data loss or backpressure.
+
+`examples/benchmark.py` drives pathological synthetic traffic (never-closing
+flows, scans, retransmit storms) through the whole pipeline and reports
+throughput, peak memory and where every event went. `SECURITY.md` has the threat
+model; `ARCHITECTURE.md` has the capture-path contract and the resource bounds.
+This is a production-*oriented* prototype with a defined hardening path — it has
+not yet been run against a live feed.
+
 ## Tests
 
 ```sh

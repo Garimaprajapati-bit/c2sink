@@ -55,8 +55,11 @@ Placement matters and is a deliberate choice, not an accident:
 | `tls.py` | Parse a (possibly truncated) TLS ClientHello: SNI, versions, ALPN, JA4 and JA3. |
 | `http.py` / `dns.py` / `quic.py` | HTTP request head; DNS query name; QUIC Initial detection. |
 | `report.py` | Derive from the event log: feed health (per prefix), beaconing (per src→C2 pair), and the subscriber view. |
-| `generate.py` | Craft ClientHello / HTTP for tests and demos (no real malware). |
-| `__main__.py` | `serve` / `report` / `rules` CLI. |
+| `writer.py` | Durable, bounded event writer: non-blocking submit, background drain to append-only JSONL, counts drops/write-errors, defined flush/shutdown. |
+| `metrics.py` | Operational counters for the collector itself + a read-only `/metrics` (Prometheus) and `/healthz` endpoint. |
+| `privacy.py` | Subscriber-IP pseudonymisation (salted HMAC) and output sanitisation. |
+| `generate.py` | Craft ClientHello / HTTP / pcaps for tests and demos (no real malware). |
+| `__main__.py` | `serve` / `ingest` / `report` / `rules` CLI. |
 
 There are three layers, kept independent so each can change without the others:
 **capture** (`server.py` live, `capture.py` pcap/TZSP, `packet.py`/`pcap.py`/
@@ -126,6 +129,65 @@ analysis is a new pure function over the log, never a change to capture.
 - **Trust**: an ISP running this sees its own customers' destination metadata,
   which it already sees in NetFlow; the feed operator sees only per-prefix
   aggregates unless an ISP chooses to share more.
+
+## Capture-path contract
+
+The three capture sources are different mechanisms, and the architecture's claim
+that they produce equivalent events is a claim that has to be demonstrated, not
+assumed. The common contract is:
+
+```
+capture source → normalized observation (5-tuple + first client payload) → build_event → Event
+```
+
+What each source can and cannot observe differs, and that difference is explicit:
+
+| Capture source | Sees | Gets the first payload via | Equivalence |
+|---|---|---|---|
+| **pcap replay** | whole packets as captured | TCP reassembly (client→server), UDP first datagram | reference path |
+| **live TZSP mirror** | whole packets (same frames, TZSP-wrapped) | same packet parser + same reassembler | **identical** events to pcap for the same frames (tested) |
+| **live sink** | a completed handshake + socket bytes | one socket read (the kernel already reassembled) | **same parsed protocol fields** (SNI/JA3/JA4/ALPN/version) for the same ClientHello; transport-level fields such as the source port legitimately differ (tested) |
+
+So: pcap and TZSP go through `packet.py` + `capture.py` and yield byte-identical
+events; the live sink skips reassembly (the kernel did it) but feeds the same
+`build_event`, so the *protocol* fields match. Both equivalences are asserted in
+`tests/test_production.py`, not just stated here.
+
+## Resource bounds and reliability
+
+Hostile traffic must not be able to exhaust memory or silently lose data. The
+bounds are:
+
+- **Per-flow:** at most `max_bytes` buffered and 64 segments; overlapping or
+  retransmitted segments are resolved first-writer-wins (a later packet cannot
+  overwrite earlier data — anti-evasion and anti-corruption).
+- **Per-table:** at most `max_flows` concurrent flows; over the cap the
+  oldest-inserted flow is evicted in O(1). A flow idle for `idle_timeout`, or
+  open longer than `max_duration`, is flushed (emitting the honest partial) and
+  freed. Buffers are freed on FIN/RST and on timeout.
+- **Event writing:** a bounded in-memory queue drained by a background thread to
+  an append-only JSONL file. `submit()` never blocks the capture path; when the
+  queue is full, the event is dropped and **counted** (`events_dropped`), so
+  backpressure is visible. Write errors (e.g. a full disk) are counted and the
+  collector keeps running. The reader tolerates a torn final line from a crash.
+- **Observability:** `metrics.py` exposes packets, events, parse failures,
+  reassembly timeouts, segments deduped, flows evicted, events written/dropped,
+  write errors, active flows and queue depth — as an end-of-run summary
+  (`ingest`) or a `/metrics` scrape endpoint (`serve --metrics-port`).
+
+A synthetic benchmark (`examples/benchmark.py`) drives a mix of complete,
+never-closing, scan-only and retransmit-storm flows through the full pipeline.
+On one core it sustains ~110k packets/s with peak RSS bounded to tens of MiB
+regardless of flow count; event accounting always balances
+(`written + dropped == produced`), and with an adequately sized writer queue the
+drop count is zero.
+
+## Event schema versioning
+
+Every `Event` carries `schema_version` (`analysis.SCHEMA_VERSION`). It is bumped
+when a field's meaning changes or one is removed, not for purely additive
+fields, so a downstream reader or SIEM can branch on it; readers tolerate an
+unknown (newer) version rather than failing.
 
 ## Testing
 

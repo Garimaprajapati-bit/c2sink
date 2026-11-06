@@ -54,10 +54,17 @@ field.
 
 ## Running the sink safely
 
-- **Least privilege.** The sink needs root only to bind a low port and to read
-  `SO_ORIGINAL_DST` on redirected sockets. Pass `--user <account>` and it drops
-  to that unprivileged account immediately after binding, before it handles any
-  traffic. Groups are dropped before the uid, and the drop is verified.
+- **Privilege separation.** The sink needs root only to bind a low port and to
+  read `SO_ORIGINAL_DST` on redirected sockets; it must not keep root while
+  parsing attacker-controlled bytes. Pass `--user <account>` and it drops to
+  that unprivileged account immediately after binding (and after binding the
+  metrics port), before serving. Supplementary groups and the gid are dropped
+  before the uid, the drop is **verified** (it asserts it cannot regain root),
+  and on Linux it sets `PR_SET_NO_NEW_PRIVS` so no later exec can re-escalate.
+  Deploy it as a non-root service whose only elevated step is the redirect/
+  capture setup, keep the feed and config files **read-only** to the collector
+  account, and the event log is created mode `0600` (it holds subscriber
+  metadata).
 - **Resource bounds.** The first read is bounded (`read_bytes`, `read_timeout`)
   and the connection is closed immediately, so a flood costs one accept + one
   read each. The reassembler bounds its flow table and dedup set

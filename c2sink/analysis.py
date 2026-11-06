@@ -18,6 +18,12 @@ from . import quic as quic_parser
 from . import tls as tls_parser
 from .feed import FeedIndex
 
+# Event schema version. Bump when a field's meaning changes or one is removed so
+# that a reader (and any downstream SIEM/report) can branch on it; purely
+# additive fields do not require a bump. Readers should tolerate an unknown
+# (newer) version rather than fail.
+SCHEMA_VERSION = 1
+
 
 @dataclass
 class Event:
@@ -27,6 +33,7 @@ class Event:
     dst_ip: str
     dst_port: int
     bytes_from_client: int
+    schema_version: int = SCHEMA_VERSION
     transport: str = "tcp"          # tcp | udp
     proto: str = "unknown"          # tls | http | dns | quic | unknown
     feed_label: Optional[str] = None

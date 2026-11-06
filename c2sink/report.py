@@ -111,12 +111,23 @@ def render_beacons(beacons: List[Beacon]) -> str:
 
 
 def load_events(path: str) -> List[dict]:
-    events = []
+    """Load the JSONL event log, tolerating a partially written final line (a
+    crash during a write leaves at most one). A malformed line is skipped and
+    counted rather than aborting the whole report."""
+    import sys
+    events: List[dict] = []
+    skipped = 0
     with open(path, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
-            if line:
+            if not line:
+                continue
+            try:
                 events.append(json.loads(line))
+            except json.JSONDecodeError:
+                skipped += 1
+    if skipped:
+        print(f"(skipped {skipped} malformed log line(s))", file=sys.stderr)
     return events
 
 
